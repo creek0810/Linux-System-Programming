@@ -7,7 +7,6 @@
 #include <string.h>
 
 #define ESC 27
-#define BACKSPACE 8
 #define DEL 127
 
 /* struct and enum */
@@ -37,8 +36,6 @@ struct Line {
     size_t size;
     int len;
 };
-
-
 
 /* init function */
 void init_terminal() {
@@ -108,9 +105,7 @@ void init_editor(char *file_name) {
     // show file
     Line *cur_line = editor.file_start;
     while(cur_line) {
-        for(int i=0; i<cur_line->len; i++) {
-            waddch(editor.pad, cur_line->str[i]);
-        }
+        waddstr(editor.pad, cur_line->str);
         cur_line = cur_line->next;
     }
     prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
@@ -176,21 +171,54 @@ void normal_mode_action(int ch) {
     prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
 
+void insert_ch(int ch) {
+    Line *cur_line = editor.cur_line;
+    if((unsigned long)(cur_line->len + 2) > cur_line->size) {
+        // TODO: check if realloc error
+        cur_line->size *= 2;
+        cur_line->str = (char*)realloc(cur_line->str, sizeof(char) * cur_line->size);
+    }
+    int x = editor.col;
+    memmove(cur_line->str + x + 1, cur_line->str + x, cur_line->len - x);
+    cur_line->str[x] = ch;
+    cur_line->len += 1;
+    editor.col += 1;
+    // redraw
+    mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
+    // move cursor
+    wmove(editor.pad, editor.row, editor.col);
+    prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
+}
+
+void delete_ch() {
+    Line *cur_line = editor.cur_line;
+    if(editor.col != 0) {
+        int x = editor.col;
+        memmove(cur_line->str + x - 1, cur_line->str + x, cur_line->len - x);
+        cur_line->str[cur_line->len - 1] = 0;
+        editor.col -= 1;
+        cur_line->len -= 1;
+    } else {
+        // TODO: go to previos line
+    }
+    mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
+    // move cursor
+    wmove(editor.pad, editor.row, editor.col);
+    prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
+}
+
+
 void insert_mode_action(int ch) {
     switch(ch) {
         case ESC:
             editor.mode = NORMAL_MODE;
             break;
-        case BACKSPACE:
+        case KEY_BACKSPACE:
         case DEL:
-            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
-            move(editor.row, editor.col);
-            echochar(' ');
-            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
+            delete_ch();
             break;
         default:
-            waddch(editor.pad, ch);
-            editor.col += 1;
+            insert_ch(ch);
             break;
     }
     prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
@@ -224,6 +252,19 @@ char read_keyboard() {
     return ch;
 }
 
+void save_file() {
+    // TODO: check name
+    FILE *fp = fopen("test.out", "w+");
+    Line *cur_line = editor.file_start;
+    while(cur_line) {
+        fprintf(fp, "%s", cur_line->str);
+        cur_line = cur_line->next;
+    }
+    fclose(fp);
+}
+
+
+
 /* main function */
 int main(int argc, char *argv[]) {
     if(argc != 2) {
@@ -238,5 +279,6 @@ int main(int argc, char *argv[]) {
             break;
         }
     }
+    save_file();
     endwin();
 }
