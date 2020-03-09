@@ -8,6 +8,7 @@
 
 #define ESC 27
 #define DEL 127
+#define NEWLINE 0xA
 
 /* struct and enum */
 typedef enum editor_mode_t editor_mode_t;
@@ -88,7 +89,7 @@ void init_editor(char *file_name) {
     load_file(file_name);
     /* init editor info pad */
     // TODO: determine the buffer size for pad
-    editor.pad = newpad(editor.file_line_cnt, COLS);
+    editor.pad = newpad(editor.file_line_cnt + 100, COLS);
     keypad(editor.pad, TRUE);
 
     /* init screen size */
@@ -190,21 +191,94 @@ void insert_ch(int ch) {
     prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
 
+void move_str(Line *ori_line, int ori_loc, Line *cur_line, int cur_loc) {
+    int len = strlen(ori_line->str + ori_loc);
+    // TODO: realloc must!!!
+    if(len > cur_line->size) {
+    }
+    // copy to cur_line
+    cur_line->len = cur_line->len + len - 1;
+    strncpy(cur_line->str + cur_loc, ori_line->str + ori_loc, len);
+    // clear ori_line
+    ori_line->len = ori_line->len - len + 1;
+    ori_line->str[ori_loc] = '\n';
+    memset(ori_line->str + ori_line->len, 0, ori_line->size - ori_line->len);
+}
+
 void delete_ch() {
     Line *cur_line = editor.cur_line;
     if(editor.col != 0) {
+        // TODO: full clear
         int x = editor.col;
         memmove(cur_line->str + x - 1, cur_line->str + x, cur_line->len - x);
         cur_line->str[cur_line->len - 1] = 0;
         editor.col -= 1;
         cur_line->len -= 1;
-    } else {
-        // TODO: go to previos line
+        mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
+    } else if(editor.row != 0){
+        // concate str
+        move_str(editor.cur_line, 0, cur_line->prev, cur_line->prev->len - 1);
+        // go to previous line
+        wdeleteln(editor.pad);
+        // rebuild linked
+        cur_line->prev->next = cur_line->next;
+        if(cur_line->next) {
+            cur_line->next->prev = cur_line->prev;
+        }
+        Line *free_line = cur_line;
+        editor.cur_line = editor.cur_line->prev;
+        free(free_line);
+        editor.file_line_cnt -= 1;
+        editor.row -= 1;
+        // skip newline
+        editor.col = editor.cur_line->len - 2;
+        // TODO: redraw cur line
+        mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
     }
-    mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
     // move cursor
     wmove(editor.pad, editor.row, editor.col);
     prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
+}
+
+void new_line() {
+    // TODO: check if pad is overflow
+    Line *tmp = calloc(1, sizeof(Line));
+    // build linked
+    tmp->next = editor.cur_line->next;
+    editor.cur_line->next->prev = tmp;
+
+    tmp->prev = editor.cur_line;
+    editor.cur_line->next = tmp;
+
+
+
+    // move prev line content to next
+    tmp->len = 0;
+    tmp->str = calloc(1, sizeof(char) * 32);
+    tmp->size = 32;
+
+
+    // move_str(editor.cur_line->str + editor.col, tmp);
+    move_str(editor.cur_line, editor.col, tmp, 0);
+
+    // TODO: update prev str
+    // update and draw on screen
+    // redraw origin line
+    mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
+    // draw new line
+    winsertln(editor.pad);
+    waddstr(editor.pad, tmp->str);
+    // update editor attr
+
+    editor.cur_line = tmp;
+    editor.file_line_cnt += 1;
+    // TODO: check scroll
+    editor.row += 1;
+    editor.col = 0;
+    wmove(editor.pad, editor.row, editor.col);
+
+
+    prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
 
 
@@ -216,6 +290,10 @@ void insert_mode_action(int ch) {
         case KEY_BACKSPACE:
         case DEL:
             delete_ch();
+            break;
+        case KEY_ENTER:
+        case NEWLINE:
+            new_line();
             break;
         default:
             insert_ch(ch);
@@ -262,8 +340,6 @@ void save_file() {
     }
     fclose(fp);
 }
-
-
 
 /* main function */
 int main(int argc, char *argv[]) {
