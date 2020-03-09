@@ -20,7 +20,7 @@ char *join_path(char *a, char *b) {
 struct dirent *get_next_dir(DIR *d) {
     /* skip . .. */
     struct dirent *cur_dir = readdir(d);
-    while(cur_dir != NULL && (strcmp(cur_dir->d_name, ".") == 0 || strcmp(cur_dir->d_name, "..") == 0)) {
+    while(cur_dir != NULL && cur_dir->d_name[0] == '.') {
         cur_dir = readdir(d);
     }
     return cur_dir;
@@ -46,7 +46,6 @@ void print_cur_dir(char *path, int depth) {
     /* expand is_last array */
     if(depth >= is_last_size) {
         is_last_size *= 2;
-        printf("realloc %d\n", is_last_size);
         bool *new_ptr = (bool*)realloc(is_last, sizeof(bool) * is_last_size);
         if(!new_ptr) {
             perror("Memory leak!");
