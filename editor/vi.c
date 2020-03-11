@@ -10,6 +10,9 @@
 #define DEL 127
 #define NEWLINE 0xA
 
+#define TAB_SIZE 4
+#define COMMAND_BUFFER_SIZE 50
+
 /* struct and enum */
 typedef enum editor_mode_t editor_mode_t;
 typedef struct Editor Editor;
@@ -42,6 +45,9 @@ struct Editor {
     WINDOW *pad;
     File file;
     Line *cur_line;
+
+    char command_buffer[COMMAND_BUFFER_SIZE];
+    int cmd_cnt;
 } editor;
 
 /* line function */
@@ -86,10 +92,6 @@ void render_pad() {
     wmove(editor.pad, editor.row, editor.col);
 }
 
-void move_end() {
-
-}
-
 int end_col(Line *cur_line) {
     int len = cur_line->len;
     if(len == 0) return 0;
@@ -101,53 +103,48 @@ int end_col(Line *cur_line) {
 }
 
 void move_up() {
-    // at screen top
-    if(editor.row == editor.min_line) {
-        // not at pad top
-        if(editor.min_line != 0) {
-            // scroll down
-            editor.max_line -= 1;
-            editor.min_line -= 1;
-            // move row
-            editor.row -= 1;
-            editor.cur_line = editor.cur_line->prev;
-        }
-    } else {
+    if(editor.row - 1 >= 0) {
         editor.row -= 1;
         editor.cur_line = editor.cur_line->prev;
+        // check col
+        int end = end_col(editor.cur_line);
+        editor.col = (editor.col > end) ? end : editor.col;
     }
-
-    // check col
-    int end = end_col(editor.cur_line);
-    editor.col = (editor.col > end) ? end : editor.col;
 }
 
 void move_down() {
-    // at screen bottom
-    if(editor.row == editor.max_line) {
-        // not at pad bottom
-        if(editor.max_line != editor.file.line_num - 1) {
-            // scroll down
-            editor.max_line += 1;
-            editor.min_line += 1;
-            // move row
-            editor.row += 1;
-            editor.cur_line = editor.cur_line->next;
-        }
-    } else {
+    if(editor.row + 1 < editor.file.line_num) {
         editor.row += 1;
         editor.cur_line = editor.cur_line->next;
+        int end = end_col(editor.cur_line);
+        editor.col = (editor.col > end) ? end : editor.col;
     }
-
-    int end = end_col(editor.cur_line);
-    editor.col = (editor.col > end) ? end : editor.col;
 }
 
-void update_scroll() {
-    // TODO: update scroll
+void update_screen() {
+    if(editor.row < editor.min_line) {
+        editor.max_line -= editor.min_line - editor.row;
+        editor.min_line = editor.row;
+    } else if(editor.row > editor.max_line) {
+        editor.min_line += editor.row - editor.max_line;
+        editor.max_line = editor.row;
+    }
     wmove(editor.pad, editor.row, editor.col);
     prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
+
+void adjust_terminal() {
+    // TODO: resize pad
+    if(editor.height != LINES) {
+        editor.height = LINES;
+        editor.max_line = editor.min_line + LINES - 1;
+    }
+    if(editor.width != COLS) {
+        editor.width = COLS;
+    }
+    update_screen();
+}
+
 
 /* init function */
 void init_terminal() {
@@ -217,6 +214,7 @@ void init_editor(char *path) {
 }
 
 /* mode action */
+void insert_newline();
 bool normal_mode_action(int ch) {
     switch(ch){
         case KEY_LEFT:
@@ -236,16 +234,37 @@ bool normal_mode_action(int ch) {
         case 'j': // down
             move_down();
             break;
+        case 'G':
+            editor.row = editor.file.line_num - 1;
+            editor.cur_line = editor.file.end;
+            editor.col = end_col(editor.cur_line);
+            break;
+        case 'o':
+            editor.col = end_col(editor.cur_line) + 1;
+            insert_newline();
+            editor.mode = INSERT_MODE;
+            break;
+        case 'a': // insert mode
+            editor.col += 1;
+            editor.mode = INSERT_MODE;
+            break;
+        case 'A': // insert mode
+            editor.col = end_col(editor.cur_line) + 1;
+            editor.mode = INSERT_MODE;
+            break;
         case 'I': // insert mode
             editor.col = 0;
         case 'i': // insert mode
             editor.mode = INSERT_MODE;
             break;
         case ':': // command mode
+            // init cmd info
+            editor.cmd_cnt = 0;
+            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
             editor.mode = COMMAND_MODE;
             break;
     }
-    update_scroll();
+    update_screen();
     return false;
 }
 
@@ -270,7 +289,7 @@ void insert_ch(int ch) {
     // redraw
     mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
     // move cursor
-    update_scroll();
+    update_screen();
 }
 
 void delete_ch() {
@@ -315,6 +334,13 @@ void delete_ch() {
 
         // redraw cur line
         mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
+        // update file
+        if(editor.file.line_num == editor.row + 1) {
+            editor.file.end = editor.cur_line;
+        }
+
+
+
     } else {
         int x = editor.col;
         memmove(cur_line->str + x - 1, cur_line->str + x, cur_line->len - x);
@@ -322,9 +348,15 @@ void delete_ch() {
         memset(cur_line->str + cur_line->len, 0, cur_line->size - cur_line->len);
         editor.col -= 1;
         mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
+        // deal with eof
+        if(editor.row == editor.file.line_num - 1) {
+            waddch(editor.pad, '\n');
+        }
     }
+
+
     // move cursor
-    update_scroll();
+    update_screen();
 }
 
 void insert_newline() {
@@ -337,6 +369,10 @@ void insert_newline() {
     editor.cur_line->prev->str[editor.col] = '\n';
     editor.cur_line->prev->len = strlen(editor.cur_line->prev->str);
 
+    // update file end
+    if(editor.file.line_num == editor.row + 1) {
+        editor.file.end = editor.cur_line;
+    }
     editor.file.line_num += 1;
 
     // update ori line and new line on screen
@@ -346,11 +382,25 @@ void insert_newline() {
     // draw cursor and update
     editor.col = 0;
     editor.row += 1;
-    update_scroll();
+    update_screen();
 }
 
 bool insert_mode_action(int ch) {
     switch(ch) {
+        case KEY_LEFT:
+            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
+            break;
+        case KEY_RIGHT:
+            // insert mode can move on \n
+            if(editor.col + 1 <= end_col(editor.cur_line) + 1)
+                editor.col += 1;
+            break;
+        case KEY_UP:
+            move_up();
+            break;
+        case KEY_DOWN:
+            move_down();
+            break;
         case ESC:
             editor.mode = NORMAL_MODE;
             break;
@@ -362,23 +412,43 @@ bool insert_mode_action(int ch) {
         case NEWLINE:
             insert_newline();
             break;
+        case '\t':
+            for(int i=0; i<TAB_SIZE; i++) {
+                insert_ch(' ');
+            }
+            break;
         default:
             insert_ch(ch);
             break;
     }
-    prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
+    update_screen();
     return false;
 }
 
+bool run_command() {
+    // TODO: if file is dirty, it needs to use q!
+    if(strcmp(editor.command_buffer, "w") == 0) {
+        save_file("test.out");
+        return false;
+    }
+    if(strcmp(editor.command_buffer, "wq") == 0) {
+        save_file("test.out");
+    }
+    return true;
+}
+
 bool command_mode_action(int ch) {
-    // TODO: read q q! wq
+    // TODO: show command on screen
     switch(ch) {
+        case KEY_ENTER:
+        case NEWLINE:
+            editor.mode = NORMAL_MODE;
+            return run_command();
         case ESC:
             editor.mode = NORMAL_MODE;
             break;
-        case 'q':
-            save_file("test.out");
-            return true;
+        default:
+            editor.command_buffer[editor.cmd_cnt++] = ch;
     }
     return false;
 }
@@ -386,6 +456,7 @@ bool command_mode_action(int ch) {
 // the return value represent close editor or not
 bool read_keyboard() {
     int ch = wgetch(editor.pad);
+    adjust_terminal();
     switch(editor.mode) {
         case NORMAL_MODE:
             return normal_mode_action(ch);
@@ -396,6 +467,8 @@ bool read_keyboard() {
     };
 }
 
+
+
 /* main function */
 int main(int argc, char *argv[]) {
     if(argc != 2) {
@@ -404,13 +477,10 @@ int main(int argc, char *argv[]) {
     }
     /* init */
     init_terminal();
-    init_file(argv[1]);
     init_editor(argv[1]);
 
     while(1) {
-        if(read_keyboard()) {
-            break;
-        }
+        if(read_keyboard()) break;
     }
     endwin();
 }
