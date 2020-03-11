@@ -42,7 +42,8 @@ struct Editor {
     int row, col; // cursor offset
     int min_line, max_line; // line num at top and bottom screen
     editor_mode_t mode;
-    WINDOW *pad;
+    WINDOW *pad, *cmd_pad;
+    int pad_height;
     File file;
     Line *cur_line;
 
@@ -135,9 +136,9 @@ void update_screen() {
 
 void adjust_terminal() {
     // TODO: resize pad
-    if(editor.height != LINES) {
-        editor.height = LINES;
-        editor.max_line = editor.min_line + LINES - 1;
+    if(editor.height != LINES - 1) {
+        editor.height = LINES - 1;
+        editor.max_line = editor.min_line + editor.height - 1;
     }
     if(editor.width != COLS) {
         editor.width = COLS;
@@ -152,6 +153,7 @@ void init_terminal() {
     noecho();
     cbreak();
     keypad(stdscr, TRUE);
+    set_escdelay(0);
 }
 
 void init_file(char *path) {
@@ -192,16 +194,20 @@ void init_file(char *path) {
 void init_editor(char *path) {
     /* init editor info pad */
     init_file(path);
-    // TODO: determine the buffer size for pad
+    // 100 means pad buffer
     editor.pad = newpad(editor.file.line_num + 100, COLS);
     keypad(editor.pad, TRUE);
+    editor.pad_height = editor.file.line_num + 100;
+    /* init cmd pad */
+    editor.cmd_pad = newpad(1, COLS);
+    keypad(editor.cmd_pad, TRUE);
 
-    /* init screen size */
+    /* init main pad size */
     editor.width = COLS;
-    editor.height = LINES;
+    editor.height = LINES - 1;
     // screen top and bottom
     editor.min_line = 0;
-    editor.max_line = LINES - 1;
+    editor.max_line = editor.height - 1;
 
     // cursor offset
     editor.row = editor.col = 0;
@@ -215,6 +221,8 @@ void init_editor(char *path) {
 
 /* mode action */
 void insert_newline();
+bool command_mode_action(int ch);
+
 bool normal_mode_action(int ch) {
     switch(ch){
         case KEY_LEFT:
@@ -258,11 +266,9 @@ bool normal_mode_action(int ch) {
             editor.mode = INSERT_MODE;
             break;
         case ':': // command mode
-            // init cmd info
-            editor.cmd_cnt = 0;
-            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
             editor.mode = COMMAND_MODE;
-            break;
+            command_mode_action((int)ch);
+            return false;
     }
     update_screen();
     return false;
@@ -360,7 +366,13 @@ void delete_ch() {
 }
 
 void insert_newline() {
-    // TODO: check if pad is overflow
+    // realloc pad
+    if(editor.file.line_num + 1 > editor.pad_height) {
+        editor.pad_height += 100;
+        wresize(editor.pad, editor.pad_height, COLS);
+    }
+
+
     editor.cur_line =
         insert_line(editor.cur_line->str + editor.col, editor.cur_line, editor.cur_line->next);
     int reset_size = editor.cur_line->prev->size - editor.col;
@@ -437,18 +449,58 @@ bool run_command() {
     return true;
 }
 
+void render_cmd_pad() {
+    mvwaddstr(editor.cmd_pad, 0, 0, editor.command_buffer);
+    // deal with clear problem
+    waddch(editor.cmd_pad, '\n');
+    wmove(editor.cmd_pad, 0, editor.cmd_cnt);
+    prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
+}
+
 bool command_mode_action(int ch) {
-    // TODO: show command on screen
     switch(ch) {
         case KEY_ENTER:
-        case NEWLINE:
+        case NEWLINE: {
             editor.mode = NORMAL_MODE;
-            return run_command();
+            bool result = run_command();
+            // clear command buffer 
+            editor.cmd_cnt = 0;
+            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
+            // update screen
+            render_cmd_pad();
+            update_screen();
+            return result;
+        }
         case ESC:
+            // clear buffer and change to normal mode
             editor.mode = NORMAL_MODE;
+            // clear command buffer 
+            editor.cmd_cnt = 0;
+            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
+            // update screen
+            render_cmd_pad();
+            update_screen();
+            break;
+        case KEY_BACKSPACE:
+        case DEL:
+            if(editor.cmd_cnt == 1) {
+                // clear buffer and change to normal mode
+                editor.mode = NORMAL_MODE;
+                // clear command buffer 
+                editor.cmd_cnt = 0;
+                memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
+                // update screen
+                render_cmd_pad();
+                update_screen();
+            } else {
+                editor.cmd_cnt -= 1;
+                editor.command_buffer[editor.cmd_cnt] = 0;
+                render_cmd_pad();
+            }
             break;
         default:
             editor.command_buffer[editor.cmd_cnt++] = ch;
+            render_cmd_pad();
     }
     return false;
 }
