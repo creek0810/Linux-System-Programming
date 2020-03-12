@@ -225,6 +225,14 @@ void init_editor(char *path) {
     render_pad();
     prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
+int first_char() {
+    for(int i = 0; i < editor.cur_line->len; i++) {
+        if(editor.cur_line->str[i] != ' ') {
+            return i;
+        }
+    }
+    return 0;
+}
 
 /* mode action */
 void insert_newline();
@@ -298,8 +306,10 @@ bool normal_mode_action(int ch) {
             }
             editor.mode = INSERT_MODE;
             break;
-        case 'I': // insert mode
-            editor.col = 0;
+        case 'I': // insert mode (find first non space char)
+            editor.mode = INSERT_MODE;
+            editor.col = first_char();
+            break;
         case 'i': // insert mode
             editor.mode = INSERT_MODE;
             break;
