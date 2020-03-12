@@ -1,32 +1,88 @@
-#include <dirent.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define INIT_DEPTH 2
+
+int SKIP_HIDDEN = 1;
+
+/* statistics var */
+int TOTAL_SIZE = 0;
+int DIR_NUM = 0;
+int FILE_NUM = 0;
+int SOFT_LINK_NUM = 0;
+
+/* recursive var */
 int is_last_size = INIT_DEPTH;
 bool *is_last;
 
-char *join_path(char *a, char *b) {
-    int new_len = strlen(a) + strlen(b) + 2;
-    char *new_path = calloc(1, sizeof(char) * new_len);
-    strcat(new_path, a);
-    strcat(new_path, "/");
-    strcat(new_path, b);
-    return new_path;
+/* path list */
+typedef struct PathList PathList;
+struct PathList {
+    // capacity = path memory size
+    // size = the number of path
+    int capacity, top;
+    char **path;
+};
+
+PathList *new_path_list() {
+    PathList *result = calloc(1, sizeof(PathList));
+    // init size is 16
+    result->capacity = 16;
+    result->path = calloc(1, sizeof(char*) * 16);
+    return result;
 }
 
-struct dirent *get_next_dir(DIR *d) {
-    /* skip . .. */
-    struct dirent *cur_dir = readdir(d);
-    while(cur_dir != NULL && cur_dir->d_name[0] == '.') {
-        cur_dir = readdir(d);
+void append_path_list(PathList *cur_list, char *path) {
+    // realloc
+    if(cur_list->capacity < cur_list->top + 1) {
+        cur_list->capacity <<= 1;
+        char **new_ptr = realloc(cur_list->path, sizeof(char*) * cur_list->capacity);
+        if(new_ptr == NULL) {
+            printf("realloc error\n");
+            exit(1);
+        };
+        cur_list->path = new_ptr;
     }
-    return cur_dir;
+    // warning: don't forget '\0'
+    int path_len = strlen(path);
+    char *copy_path = calloc(1, sizeof(char) * (path_len + 1));
+    strncpy(copy_path, path, path_len);
+    cur_list->path[cur_list->top++] = copy_path;
 }
 
-void print(char *name, int depth, bool is_last[]) {
+PathList *sort(char *path) {
+    PathList *result = new_path_list();
+    // get all file name
+    DIR *d = opendir(path);
+    if(d) {
+        struct dirent *cur_dir = readdir(d);
+        while ((cur_dir = readdir(d)) != NULL) {
+            // skip hidden file
+            if(SKIP_HIDDEN && cur_dir->d_name[0] == '.') {
+                continue;
+            }
+            append_path_list(result, cur_dir->d_name);
+        }
+    }
+    // bubble sort
+    for(int i = 0; i < result->top; i++) {
+      for(int j = i + 1; j < result->top; j++){
+         if(strcmp(result->path[i], result->path[j]) > 0) {
+            char *tmp = result->path[i];
+            result->path[i] = result->path[j];
+            result->path[j] = tmp;
+         }
+      }
+    }
+    return result;
+}
+
+void print(char *name, int depth, mode_t file_type) {
     // print prefix
     for(int i = 0; i < depth; i++) {
         if(is_last[i]) {
@@ -36,13 +92,24 @@ void print(char *name, int depth, bool is_last[]) {
         }
     }
     if(is_last[depth]) {
-        printf("└── %s\n", name);
+        printf("└── ");
     } else {
-        printf("├── %s\n", name);
+        printf("├── ");
     }
+    // choose ansi color
+    if(S_ISDIR(file_type)) {
+        printf("\033[1;96m%s\033[0m", name);
+    } else if(S_ISLNK(file_type)) {
+        printf("\033[1;95m%s\033[0m", name);
+    } else if(access(name, X_OK) == 0) {
+        printf("\033[1;91m%s\033[0m", name);
+    } else {
+        printf("%s", name);
+    }
+
 }
 
-void print_cur_dir(char *path, int depth) {
+void print_list(PathList *list, int depth) {
     /* expand is_last array */
     if(depth >= is_last_size) {
         is_last_size *= 2;
@@ -53,34 +120,57 @@ void print_cur_dir(char *path, int depth) {
         }
         is_last = new_ptr;
     }
-    DIR *d = opendir(path);
-    if(d) {
-        /* use next dir to determine if we need to print └ */
-        struct dirent *cur_dir, *next_dir = get_next_dir(d);
-        while((cur_dir = next_dir) != NULL) {
-            next_dir = get_next_dir(d);
-            /* cur_dir is the latest */
-            if(next_dir == NULL) {
-                is_last[depth] = true;
-            }
 
-            print(cur_dir->d_name, depth, is_last);
-
-            /* print folder content */
-            if(cur_dir->d_type == DT_DIR) {;
-                char *new_path = join_path(path, cur_dir->d_name);
-                print_cur_dir(new_path, depth + 1);
-                free(new_path);
-            }
+    /*
+        S_IFMT: type of file
+        S_IFBLK: block special
+        S_IFCHR: character special
+        S_IFIFO: FIFO special
+        S_IFREG: regular
+        S_IFDIR: directory
+        S_IFLNK: symbolic link
+    */
+    struct stat buf;
+    for(int i = 0; i < list->top; i++) {
+        // update is last array
+        if(i == list->top - 1) {
+            is_last[depth] = true;
         }
-        // clear is_last array
-        is_last[depth] = false;
-        closedir(d);
+        // print and calc
+        lstat(list->path[i], &buf);
+
+        print(list->path[i], depth, buf.st_mode);
+        if(S_ISLNK(buf.st_mode)) {
+            char ori_path[500];
+            readlink(list->path[i], ori_path, sizeof(ori_path));
+            SOFT_LINK_NUM += 1;
+            printf(" -> %s\n", ori_path);
+        } else if(S_ISREG(buf.st_mode)) {
+            FILE_NUM += 1;
+            printf("\n");
+        } else if(S_ISDIR(buf.st_mode)) {
+            DIR_NUM += 1;
+            printf("\n");
+            PathList *new_path_list = sort(list->path[i]);
+            // recursive
+            chdir(list->path[i]);
+            print_list(new_path_list, depth + 1);
+            chdir("..");
+        }
+        // calc total size
+        TOTAL_SIZE += buf.st_size;
     }
+    // clear is_last array
+    is_last[depth] = false;
 }
+
+
 
 int main() {
     is_last = calloc(1, sizeof(bool) * INIT_DEPTH);
     printf(".\n");
-    print_cur_dir(".", 0);
+    PathList *list = sort(".");
+    print_list(list, 0);
+    printf("\n%d directories, %d files, %d soft links\n", DIR_NUM, FILE_NUM, SOFT_LINK_NUM);
+    printf("size: %d\n", TOTAL_SIZE);
 }
