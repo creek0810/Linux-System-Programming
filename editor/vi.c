@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <termios.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <ncurses.h>
@@ -157,6 +156,7 @@ void init_terminal() {
 }
 
 void init_file(char *path) {
+    // TODO: deal with tab showing problem
     // init editor.file
     memset(&editor.file, 0, sizeof(File));
     editor.file.path = path;
@@ -191,6 +191,13 @@ void init_file(char *path) {
     free(buffer);
 }
 
+void prepend_newline() {
+    editor.cur_line = insert_line("\n", editor.cur_line->prev, editor.cur_line);
+    if(editor.row == 0) editor.file.start = editor.cur_line;
+    editor.file.line_num += 1;
+    winsertln(editor.pad);
+}
+
 void init_editor(char *path) {
     /* init editor info pad */
     init_file(path);
@@ -221,6 +228,7 @@ void init_editor(char *path) {
 
 /* mode action */
 void insert_newline();
+void delete_ch();
 bool command_mode_action(int ch);
 
 bool normal_mode_action(int ch) {
@@ -242,6 +250,18 @@ bool normal_mode_action(int ch) {
         case 'j': // down
             move_down();
             break;
+        case 'x': // delete cur char
+            // check if the line is empty
+            if(editor.cur_line->str[editor.col] != '\n' &&
+                editor.cur_line->str[editor.col] != 0) {
+                editor.col += 1;
+                delete_ch();
+                // deal with end of line problem
+                if(editor.col > end_col(editor.cur_line)) {
+                    editor.col = end_col(editor.cur_line);
+                }
+            }
+            break;
         case 'G':
             editor.row = editor.file.line_num - 1;
             editor.cur_line = editor.file.end;
@@ -252,12 +272,30 @@ bool normal_mode_action(int ch) {
             insert_newline();
             editor.mode = INSERT_MODE;
             break;
+        case 'O':
+            editor.col = 0;
+            prepend_newline();
+            editor.mode = INSERT_MODE;
+            break;
         case 'a': // insert mode
-            editor.col += 1;
+            // if col line not empty
+            if(end_col(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col += 1;
+                }
+            } else {
+                editor.col += 1;
+            }
             editor.mode = INSERT_MODE;
             break;
         case 'A': // insert mode
-            editor.col = end_col(editor.cur_line) + 1;
+            if(end_col(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col = end_col(editor.cur_line) + 1;
+                }
+            } else {
+                editor.col = end_col(editor.cur_line) + 1;
+            }
             editor.mode = INSERT_MODE;
             break;
         case 'I': // insert mode
@@ -344,9 +382,6 @@ void delete_ch() {
         if(editor.file.line_num == editor.row + 1) {
             editor.file.end = editor.cur_line;
         }
-
-
-
     } else {
         int x = editor.col;
         memmove(cur_line->str + x - 1, cur_line->str + x, cur_line->len - x);
@@ -359,8 +394,6 @@ void delete_ch() {
             waddch(editor.pad, '\n');
         }
     }
-
-
     // move cursor
     update_screen();
 }
@@ -371,8 +404,6 @@ void insert_newline() {
         editor.pad_height += 100;
         wresize(editor.pad, editor.pad_height, COLS);
     }
-
-
     editor.cur_line =
         insert_line(editor.cur_line->str + editor.col, editor.cur_line, editor.cur_line->next);
     int reset_size = editor.cur_line->prev->size - editor.col;
@@ -415,6 +446,9 @@ bool insert_mode_action(int ch) {
             break;
         case ESC:
             editor.mode = NORMAL_MODE;
+            if(editor.col > end_col(editor.cur_line)) {
+                editor.col = end_col(editor.cur_line);
+            }
             break;
         case KEY_BACKSPACE:
         case DEL:
@@ -425,6 +459,7 @@ bool insert_mode_action(int ch) {
             insert_newline();
             break;
         case '\t':
+        case KEY_STAB:
             for(int i=0; i<TAB_SIZE; i++) {
                 insert_ch(' ');
             }
@@ -439,11 +474,31 @@ bool insert_mode_action(int ch) {
 
 bool run_command() {
     // TODO: if file is dirty, it needs to use q!
-    if(strcmp(editor.command_buffer, "w") == 0) {
+    if(strcmp(editor.command_buffer, ":w") == 0) {
         save_file("test.out");
         return false;
     }
-    if(strcmp(editor.command_buffer, "wq") == 0) {
+    // line jump
+    if('0' <= editor.command_buffer[1] && '9' >= editor.command_buffer[1]) {
+        // get line num, be care for exceed number
+        int line_num = atoi(editor.command_buffer + 1);
+        if(line_num >= editor.file.line_num) {
+            line_num = editor.file.line_num - 1;
+        } else if(line_num > 0){ // warning: row is 0 base
+            line_num --;
+        }
+
+        editor.row = line_num;
+        // update cur line
+        int cur_num = 0;
+        editor.cur_line = editor.file.start;
+        while(cur_num < line_num) {
+            editor.cur_line = editor.cur_line->next;
+            cur_num ++;
+        }
+        return false;
+    }
+    if(strcmp(editor.command_buffer, ":wq") == 0) {
         save_file("test.out");
     }
     return true;
@@ -519,7 +574,38 @@ bool read_keyboard() {
     };
 }
 
+void update_status_bar() {
+    switch (editor.mode) {
+        case NORMAL_MODE: {
+            char str[200] = {0};
+            sprintf(str, "%*s %d,%d\n",
+                editor.width - 20, " ", editor.row + 1, editor.col + 1);
 
+
+            mvwaddstr(editor.cmd_pad, 0, 0, str);
+            // deal with clear problem
+            wmove(editor.pad, editor.row, editor.col);
+            prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
+            prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
+            break;
+        }
+        case COMMAND_MODE:
+            break;
+        case INSERT_MODE: {
+            char str[200] = {0};
+            sprintf(str, "-- INSERT -- %*s %d,%d  %d/%d\n",
+                editor.width - 30, " ", editor.row + 1, editor.col + 1,
+                editor.row + 1, editor.file.line_num);
+
+            mvwaddstr(editor.cmd_pad, 0, 0, str);
+            // deal with clear problem
+            wmove(editor.pad, editor.row, editor.col);
+            prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
+            prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
+            break;
+        }
+    }
+}
 
 /* main function */
 int main(int argc, char *argv[]) {
@@ -531,8 +617,10 @@ int main(int argc, char *argv[]) {
     init_terminal();
     init_editor(argv[1]);
 
+    update_status_bar();
     while(1) {
         if(read_keyboard()) break;
+        update_status_bar();
     }
     endwin();
 }
