@@ -11,6 +11,7 @@
 
 #define TAB_SIZE 4
 #define COMMAND_BUFFER_SIZE 50
+#define NORMAL_BUFFER_SIZE 50
 
 /* struct and enum */
 typedef enum editor_mode_t editor_mode_t;
@@ -47,6 +48,8 @@ struct Editor {
     Line *cur_line;
 
     char command_buffer[COMMAND_BUFFER_SIZE];
+    char pre_normal;
+    
     int cmd_cnt;
 } editor;
 
@@ -199,6 +202,7 @@ void prepend_newline() {
 }
 
 void init_editor(char *path) {
+    editor.pre_normal = 0;
     /* init editor info pad */
     init_file(path);
     // 100 means pad buffer
@@ -268,6 +272,34 @@ bool normal_mode_action(int ch) {
                 if(editor.col > end_col(editor.cur_line)) {
                     editor.col = end_col(editor.cur_line);
                 }
+            }
+            break;
+        case 'g': 
+            if(editor.pre_normal == 'g') {
+                editor.cur_line = editor.file.start;
+                editor.row = 0;
+                editor.pre_normal = 0;
+            } else {
+                editor.pre_normal = 'g';
+            }
+            break;
+        case 'd':
+            // TODO: buffer the delete line and support p P action
+            if(editor.pre_normal == 'd') {
+                wdeleteln(editor.pad);
+                editor.file.line_num -= 1;
+
+                editor.cur_line->prev->next = editor.cur_line->next;
+                if(editor.cur_line->next) {
+                    editor.cur_line->next->prev= editor.cur_line->prev;
+                    editor.cur_line = editor.cur_line->next;
+                } else {
+                    editor.cur_line = editor.cur_line->prev;
+                    editor.row -= 1;
+                }
+                editor.pre_normal = 0;
+            } else {
+                editor.pre_normal = 'd';
             }
             break;
         case 'G':
