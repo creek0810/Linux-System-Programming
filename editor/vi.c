@@ -4,12 +4,14 @@
 #include <ctype.h>
 #include <ncurses.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define ESC 27
 #define DEL 127
 #define NEWLINE 10
 
 #define TAB_SIZE 4
+#define INDENT_SIZE 4
 #define COMMAND_BUFFER_SIZE 50
 #define NORMAL_BUFFER_SIZE 50
 
@@ -28,6 +30,7 @@ struct File {
     Line *start, *end;
     int line_num;
     char *path;
+    time_t last_update;
 };
 
 struct Line {
@@ -91,6 +94,27 @@ Line *delete_line(Line *cur_line) {
     free(cur_line->str);
     free(cur_line);
     return result;
+}
+
+Line *update_line(Line *cur_line, char *str) {
+    // warning: str can't have same address with cur_line->str
+    int str_len = strlen(str);
+    // warning: don't forget to count '\0'
+    int str_size = str_len + 1;
+    if(str_size > cur_line->size) {
+        cur_line->size *= 2;
+        char *new_ptr = (char*)realloc(cur_line->str, sizeof(char) * cur_line->size);
+        if(new_ptr == NULL) {
+            endwin();
+            printf("realloc error!\n");
+            exit(1);
+        }
+        cur_line->str = new_ptr;
+    }
+    memset(cur_line->str, 0, cur_line->size);
+    strncpy(cur_line->str, str, str_len);
+    cur_line->len = str_len;
+    return cur_line;
 }
 
 /* file function */
@@ -162,6 +186,11 @@ void init_terminal() {
 }
 
 void init_file(char *path) {
+    // get modification time
+    struct stat file_info;
+    stat(path, &file_info);
+    editor.file.last_update = file_info.st_mtime;
+
     // TODO: deal with tab showing problem
     // init editor.file
     memset(&editor.file, 0, sizeof(File));
@@ -172,7 +201,7 @@ void init_file(char *path) {
     if(fp == NULL){
         // new file
         editor.file.end = editor.file.start = editor.cur_line =
-            insert_line("", NULL, NULL);
+            insert_line("\n", NULL, NULL);
         editor.file.line_num = 1;
         return;
     }
@@ -244,6 +273,24 @@ int first_char(Line *cur_line) {
         i++;
     }
     return (i < cur_line->len) ? i : last_char(cur_line);
+}
+
+bool increase_indent(Line *cur_line) {
+    // check if cur_line ends with ':', '[', '(', '{'
+    int idx = cur_line->len - 1;
+    while(idx >= 0) {
+        if(cur_line->str[idx] == '\n' || cur_line->str[idx] == ' ') {
+            idx--;
+        } else if(
+            cur_line->str[idx] == ':' || cur_line->str[idx] == '[' ||
+            cur_line->str[idx] == '(' || cur_line->str[idx] == '{'
+        ) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    return false;
 }
 
 /* undefined */
@@ -424,6 +471,16 @@ bool run_command() {
     return true;
 }
 
+int auto_indent(Line *prev_line) {
+    if(!prev_line) return 0;
+    if(increase_indent(prev_line)) {
+        return first_char(prev_line) + INDENT_SIZE;
+    } else {
+        return first_char(prev_line);
+    }
+}
+
+
 /* mode action */
 void insert_mode_change(int ch) {
     editor.mode = INSERT_MODE;
@@ -433,12 +490,28 @@ void insert_mode_change(int ch) {
         case 'I': // move cursor to the first char at cur_line
             editor.col = first_char(editor.cur_line);
             break;
-        case 'o': // open new line below cur_line
-            insert_newline("\n", editor.cur_line, editor.cur_line->next, editor.row + 1, 0);
+        case 'o': { // open new line below cur_line
+            char str[200] = {0};
+            int indent_size = auto_indent(editor.cur_line);
+            if(indent_size) {
+                sprintf(str, "%*s\n", indent_size, " ");
+            } else {
+                sprintf(str, "\n");
+            }
+            insert_newline(str, editor.cur_line, editor.cur_line->next, editor.row + 1, indent_size);
             break;
-        case 'O': // open new line above cur_line
-            insert_newline("\n", editor.cur_line->prev, editor.cur_line, editor.row, 0);
+        }
+        case 'O': { // open new line above cur_line
+            char str[200] = {0};
+            int indent_size = auto_indent(editor.cur_line->prev);
+            if(indent_size) {
+                sprintf(str, "%*s\n", indent_size, " ");
+            } else {
+                sprintf(str, "\n");
+            }
+            insert_newline(str, editor.cur_line->prev, editor.cur_line, editor.row, indent_size);
             break;
+        }
         case 'a': // move cursor to the char after cur char
             // if col line not empty
             if(last_char(editor.cur_line) == 0) {
@@ -509,6 +582,7 @@ bool normal_mode_action(int ch) {
                 editor.pre_normal = 'y';
             }
             break;
+        // delete
         case 'd':
             if(editor.pre_normal == 'd') {
                 // store cur_line->str into editor.paste_buffer
@@ -528,6 +602,48 @@ bool normal_mode_action(int ch) {
                 }
             } else {
                 editor.pre_normal = 'd';
+            }
+            break;
+        // indent
+        case '<':
+            if(editor.pre_normal == '<') {
+                editor.pre_normal = 0;
+                int space_num = first_char(editor.cur_line);
+                // construct new str
+                char tmp_str[200] = {0};
+                if(space_num % INDENT_SIZE == 0) {
+                    if(space_num / INDENT_SIZE > 0) {
+                        strncpy(tmp_str, editor.cur_line->str + INDENT_SIZE, editor.cur_line->len - INDENT_SIZE);
+                    } else {
+                        strncpy(tmp_str, editor.cur_line->str, editor.cur_line->len);
+                    }
+                } else {
+                    int indent_size = space_num % INDENT_SIZE;
+                    strncpy(tmp_str, editor.cur_line->str + indent_size, editor.cur_line->len - indent_size);
+                }
+                update_line(editor.cur_line, tmp_str);
+                mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
+                editor.col = first_char(editor.cur_line);
+            } else {
+                editor.pre_normal = '<';
+            }
+            break;
+        case '>':
+            if(editor.pre_normal == '>') {
+                editor.pre_normal = 0;
+                int space_num = first_char(editor.cur_line);
+                // construct new str
+                char tmp_str[200] = {0};
+                if(space_num % INDENT_SIZE == 0) {
+                    sprintf(tmp_str, "%*s%s", INDENT_SIZE, " ", editor.cur_line->str);
+                } else {
+                    sprintf(tmp_str, "%*s%s", INDENT_SIZE - (space_num % INDENT_SIZE), " ", editor.cur_line->str);
+                }
+                update_line(editor.cur_line, tmp_str);
+                mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
+                editor.col = first_char(editor.cur_line);
+            } else {
+                editor.pre_normal = '>';
             }
             break;
         // jump line
@@ -581,9 +697,7 @@ bool insert_mode_action(int ch) {
             break;
         case ESC:
             editor.mode = NORMAL_MODE;
-            if(editor.col > last_char(editor.cur_line)) {
-                editor.col = last_char(editor.cur_line);
-            }
+            if(editor.col > 0) editor.col--;
             break;
         case KEY_BACKSPACE:
         case DEL:
@@ -592,6 +706,7 @@ bool insert_mode_action(int ch) {
         case KEY_ENTER:
         case NEWLINE: {
             int ori_col = editor.col;
+            // init no indent new line
             insert_newline(editor.cur_line->str + editor.col, editor.cur_line, editor.cur_line->next, editor.row + 1, 0);
             // update prev line
             int reset_size = editor.cur_line->prev->size - ori_col;
@@ -599,13 +714,18 @@ bool insert_mode_action(int ch) {
             editor.cur_line->prev->str[ori_col] = '\n';
             editor.cur_line->prev->len = strlen(editor.cur_line->prev->str);
             mvwaddstr(editor.pad, editor.row - 1, 0, editor.cur_line->prev->str);
+            // add indent to cur_line
+            char str[200] = {0};
+            int indent_size = auto_indent(editor.cur_line->prev);
+            sprintf(str, "%*s%s", indent_size, " ", editor.cur_line->str);
+            update_line(editor.cur_line, str);
+            editor.col = indent_size;
+            mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
             break;
         }
         case '\t':
         case KEY_STAB:
-            for(int i=0; i<TAB_SIZE; i++) {
-                insert_ch(' ');
-            }
+            for(int i = 0; i < TAB_SIZE; i++) insert_ch(' ');
             break;
         default:
             insert_ch(ch);
