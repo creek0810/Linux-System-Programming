@@ -51,6 +51,9 @@ struct Editor {
     int cmd_cnt;
 
     char pre_normal;
+
+    char *paste_buffer;
+
 } editor;
 
 /* line function */
@@ -256,16 +259,9 @@ void adjust_terminal() {
     update_pad();
 }
 
-void prepend_newline() {
-    editor.cur_line = insert_line("\n", editor.cur_line->prev, editor.cur_line);
-    if(editor.row == 0) editor.file.start = editor.cur_line;
-    editor.file.line_num += 1;
-    winsertln(editor.pad);
-}
-
 /* action function */
 void move_up() {
-    if(editor.row > 1) {
+    if(editor.row > 0) {
         editor.row -= 1;
         editor.cur_line = editor.cur_line->prev;
         int end = last_char(editor.cur_line);
@@ -282,128 +278,36 @@ void move_down() {
     }
 }
 
-/* mode action */
-void insert_newline();
-void delete_ch();
-
-void insert_mode_change(int ch) {
-    editor.mode = INSERT_MODE;
-    switch(ch){
-        case 'i':
-            break;
-        case 'I': // insert mode (find first non space char)
-            editor.col = first_char(editor.cur_line);
-            break;
-        case 'o':
-            editor.col = last_char(editor.cur_line) + 1;
-            insert_newline();
-            break;
-        case 'O':
-            editor.col = 0;
-            prepend_newline();
-            break;
-        case 'a': // insert mode
-            // if col line not empty
-            if(last_char(editor.cur_line) == 0) {
-                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
-                    editor.col += 1;
-                }
-            } else {
-                editor.col += 1;
-            }
-            break;
-        case 'A': // insert mode
-            if(last_char(editor.cur_line) == 0) {
-                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
-                    editor.col = last_char(editor.cur_line) + 1;
-                }
-            } else {
-                editor.col = last_char(editor.cur_line) + 1;
-            }
-            break;
+void update_paste_buffer(char *str) {
+    if(editor.paste_buffer) {
+        free(editor.paste_buffer);
     }
+    // warning: add 1 to store '\0'
+    int str_len = strlen(str);
+    editor.paste_buffer = calloc(1, sizeof(char) * (str_len + 1));
+    strncpy(editor.paste_buffer, str, str_len);
 }
 
-bool normal_mode_action(int ch) {
-    switch(ch){
-        // move cursor
-        case KEY_LEFT:
-        case 'h':
-            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
-            break;
-        case KEY_RIGHT:
-        case 'l':
-            if(editor.col + 1 <= last_char(editor.cur_line))
-                editor.col += 1;
-            break;
-        case KEY_UP:
-        case 'k':
-            move_up();
-            break;
-        case KEY_DOWN:
-        case 'j':
-            move_down();
-            break;
-        case 'x': // delete cur char
-            // check if the line is empty
-            if(editor.cur_line->str[editor.col] != '\n' &&
-                editor.cur_line->str[editor.col] != 0) {
-                editor.col += 1;
-                delete_ch();
-                // deal with end of line problem
-                if(editor.col > last_char(editor.cur_line)) {
-                    editor.col = last_char(editor.cur_line);
-                }
-            }
-            break;
-        case 'd':
-            // TODO: buffer the delete line and support p P action
-            if(editor.pre_normal == 'd') {
-                editor.pre_normal = 0;
-                wdeleteln(editor.pad);
-                editor.file.line_num -= 1;
-                editor.cur_line = delete_line(editor.cur_line);
-                // TODO: maybe it can be a function
-                // update file start or end
-                if(editor.row == 0) {
-                    editor.file.start = editor.cur_line;
-                } else if(editor.row == editor.file.line_num) {
-                    editor.row -= 1;
-                    editor.file.end = editor.cur_line;
-                }
-            } else {
-                editor.pre_normal = 'd';
-            }
-            break;
-        // jump line
-        case 'g':
-            if(editor.pre_normal == 'g') {
-                editor.cur_line = editor.file.start;
-                editor.row = 0;
-                editor.pre_normal = 0;
-            } else {
-                editor.pre_normal = 'g';
-            }
-            break;
-        case 'G':
-            editor.row = editor.file.line_num - 1;
-            editor.cur_line = editor.file.end;
-            editor.col = last_char(editor.cur_line);
-            break;
-        case 'a': // change to insert mode
-        case 'A':
-        case 'o':
-        case 'O':
-        case 'i':
-        case 'I':
-            insert_mode_change(ch);
-            break;
-        case ':': // change to command mode
-            editor.mode =  COMMAND_MODE;
-            break;
-
+void insert_newline(char *str, Line *prev_line, Line *next_line, int row, int col) {
+    // realloc pad
+    if(editor.file.line_num + 1 > editor.pad_height) {
+        editor.pad_height += 100;
+        wresize(editor.pad, editor.pad_height, COLS);
     }
-    return false;
+
+    Line *new_line = insert_line(str, prev_line, next_line);
+    // update file info
+    if(new_line->prev == NULL) editor.file.start = new_line;
+    if(new_line->next == NULL) editor.file.end = new_line;
+    editor.file.line_num += 1;
+    // update editor
+    editor.col = col;
+    editor.row = row;
+    editor.cur_line = new_line;
+    // draw
+    wmove(editor.pad, editor.row, editor.col);
+    winsertln(editor.pad);
+    waddstr(editor.pad, new_line->str);
 }
 
 void insert_ch(int ch) {
@@ -488,78 +392,6 @@ void delete_ch() {
     }
 }
 
-void insert_newline() {
-    // realloc pad
-    if(editor.file.line_num + 1 > editor.pad_height) {
-        editor.pad_height += 100;
-        wresize(editor.pad, editor.pad_height, COLS);
-    }
-    editor.cur_line =
-        insert_line(editor.cur_line->str + editor.col, editor.cur_line, editor.cur_line->next);
-    int reset_size = editor.cur_line->prev->size - editor.col;
-    memset(editor.cur_line->prev->str + editor.col, 0, reset_size);
-    // update prev line
-    editor.cur_line->prev->str[editor.col] = '\n';
-    editor.cur_line->prev->len = strlen(editor.cur_line->prev->str);
-
-    // update file end
-    if(editor.file.line_num == editor.row + 1) {
-        editor.file.end = editor.cur_line;
-    }
-    editor.file.line_num += 1;
-
-    // update ori line and new line on screen
-    mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->prev->str);
-    winsertln(editor.pad);
-    waddstr(editor.pad, editor.cur_line->str);
-    // draw cursor and update
-    editor.col = 0;
-    editor.row += 1;
-}
-
-bool insert_mode_action(int ch) {
-    switch(ch) {
-        case KEY_LEFT:
-            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
-            break;
-        case KEY_RIGHT:
-            // insert mode can move on \n
-            if(editor.col + 1 <= last_char(editor.cur_line) + 1)
-                editor.col += 1;
-            break;
-        case KEY_UP:
-            move_up();
-            break;
-        case KEY_DOWN:
-            move_down();
-            break;
-        case ESC:
-            editor.mode = NORMAL_MODE;
-            if(editor.col > last_char(editor.cur_line)) {
-                editor.col = last_char(editor.cur_line);
-            }
-            break;
-        case KEY_BACKSPACE:
-        case DEL:
-            delete_ch();
-            break;
-        case KEY_ENTER:
-        case NEWLINE:
-            insert_newline();
-            break;
-        case '\t':
-        case KEY_STAB:
-            for(int i=0; i<TAB_SIZE; i++) {
-                insert_ch(' ');
-            }
-            break;
-        default:
-            insert_ch(ch);
-            break;
-    }
-    return false;
-}
-
 bool run_command() {
     // TODO: if file is dirty, it needs to use q!
     if(strcmp(editor.cmd_buffer, "w") == 0) {
@@ -590,6 +422,196 @@ bool run_command() {
         save_file("test.out");
     }
     return true;
+}
+
+/* mode action */
+void insert_mode_change(int ch) {
+    editor.mode = INSERT_MODE;
+    switch(ch){
+        case 'i':
+            break;
+        case 'I': // move cursor to the first char at cur_line
+            editor.col = first_char(editor.cur_line);
+            break;
+        case 'o': // open new line below cur_line
+            insert_newline("\n", editor.cur_line, editor.cur_line->next, editor.row + 1, 0);
+            break;
+        case 'O': // open new line above cur_line
+            insert_newline("\n", editor.cur_line->prev, editor.cur_line, editor.row, 0);
+            break;
+        case 'a': // move cursor to the char after cur char
+            // if col line not empty
+            if(last_char(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col += 1;
+                }
+            } else {
+                editor.col += 1;
+            }
+            break;
+        case 'A': // move cursor to the last char at cur_line
+            if(last_char(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col = last_char(editor.cur_line) + 1;
+                }
+            } else {
+                editor.col = last_char(editor.cur_line) + 1;
+            }
+            break;
+    }
+}
+
+bool normal_mode_action(int ch) {
+    switch(ch){
+        // move cursor
+        case KEY_LEFT:
+        case 'h':
+            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
+            break;
+        case KEY_RIGHT:
+        case 'l':
+            if(editor.col + 1 <= last_char(editor.cur_line))
+                editor.col += 1;
+            break;
+        case KEY_UP:
+        case 'k':
+            move_up();
+            break;
+        case KEY_DOWN:
+        case 'j':
+            move_down();
+            break;
+        case 'x': // delete cur char
+            // check if the line is empty
+            if(editor.cur_line->str[editor.col] != '\n' &&
+                editor.cur_line->str[editor.col] != 0) {
+                editor.col += 1;
+                delete_ch();
+                // deal with end of line problem
+                if(editor.col > last_char(editor.cur_line)) {
+                    editor.col = last_char(editor.cur_line);
+                }
+            }
+            break;
+        // paste
+        case 'p':
+            insert_newline(editor.paste_buffer, editor.cur_line, editor.cur_line->next, editor.row + 1, 0);
+            break;
+        case 'P':
+            insert_newline(editor.paste_buffer, editor.cur_line->prev, editor.cur_line, editor.row, 0);
+            break;
+        // copy
+        case 'y':
+            if(editor.pre_normal == 'y') {
+                update_paste_buffer(editor.cur_line->str);
+                editor.pre_normal = 0;
+            } else {
+                editor.pre_normal = 'y';
+            }
+            break;
+        case 'd':
+            if(editor.pre_normal == 'd') {
+                // store cur_line->str into editor.paste_buffer
+                update_paste_buffer(editor.cur_line->str);
+
+                editor.pre_normal = 0;
+                wdeleteln(editor.pad);
+                editor.file.line_num -= 1;
+                editor.cur_line = delete_line(editor.cur_line);
+                // TODO: maybe it can be a function
+                // update file start or end
+                if(editor.row == 0) {
+                    editor.file.start = editor.cur_line;
+                } else if(editor.row == editor.file.line_num) {
+                    editor.row -= 1;
+                    editor.file.end = editor.cur_line;
+                }
+            } else {
+                editor.pre_normal = 'd';
+            }
+            break;
+        // jump line
+        case 'g':
+            if(editor.pre_normal == 'g') {
+                editor.cur_line = editor.file.start;
+                editor.row = 0;
+                editor.pre_normal = 0;
+            } else {
+                editor.pre_normal = 'g';
+            }
+            break;
+        case 'G':
+            editor.row = editor.file.line_num - 1;
+            editor.cur_line = editor.file.end;
+            editor.col = last_char(editor.cur_line);
+            break;
+        // change to insert mode
+        case 'a':
+        case 'A':
+        case 'o':
+        case 'O':
+        case 'i':
+        case 'I':
+            insert_mode_change(ch);
+            break;
+        // change to command mode
+        case ':':
+            editor.mode =  COMMAND_MODE;
+            break;
+
+    }
+    return false;
+}
+
+bool insert_mode_action(int ch) {
+    switch(ch) {
+        case KEY_LEFT:
+            editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
+            break;
+        case KEY_RIGHT:
+            // insert mode can move on \n
+            if(editor.col + 1 <= last_char(editor.cur_line) + 1)
+                editor.col += 1;
+            break;
+        case KEY_UP:
+            move_up();
+            break;
+        case KEY_DOWN:
+            move_down();
+            break;
+        case ESC:
+            editor.mode = NORMAL_MODE;
+            if(editor.col > last_char(editor.cur_line)) {
+                editor.col = last_char(editor.cur_line);
+            }
+            break;
+        case KEY_BACKSPACE:
+        case DEL:
+            delete_ch();
+            break;
+        case KEY_ENTER:
+        case NEWLINE: {
+            int ori_col = editor.col;
+            insert_newline(editor.cur_line->str + editor.col, editor.cur_line, editor.cur_line->next, editor.row + 1, 0);
+            // update prev line
+            int reset_size = editor.cur_line->prev->size - ori_col;
+            memset(editor.cur_line->prev->str + ori_col, 0, reset_size);
+            editor.cur_line->prev->str[ori_col] = '\n';
+            editor.cur_line->prev->len = strlen(editor.cur_line->prev->str);
+            mvwaddstr(editor.pad, editor.row - 1, 0, editor.cur_line->prev->str);
+            break;
+        }
+        case '\t':
+        case KEY_STAB:
+            for(int i=0; i<TAB_SIZE; i++) {
+                insert_ch(' ');
+            }
+            break;
+        default:
+            insert_ch(ch);
+            break;
+    }
+    return false;
 }
 
 bool command_mode_action(int ch) {
