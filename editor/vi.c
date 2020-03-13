@@ -7,7 +7,7 @@
 
 #define ESC 27
 #define DEL 127
-#define NEWLINE 0xA
+#define NEWLINE 10
 
 #define TAB_SIZE 4
 #define COMMAND_BUFFER_SIZE 50
@@ -42,15 +42,15 @@ struct Editor {
     int row, col; // cursor offset
     int min_line, max_line; // line num at top and bottom screen
     editor_mode_t mode;
-    WINDOW *pad, *cmd_pad;
+    WINDOW *pad, *status_bar;
     int pad_height;
     File file;
     Line *cur_line;
 
-    char command_buffer[COMMAND_BUFFER_SIZE];
-    char pre_normal;
-    
+    char cmd_buffer[COMMAND_BUFFER_SIZE];
     int cmd_cnt;
+
+    char pre_normal;
 } editor;
 
 /* line function */
@@ -73,6 +73,23 @@ Line *insert_line(char *str, Line *prev_line, Line *next_line) {
     return cur_line;
 }
 
+Line *delete_line(Line *cur_line) {
+    Line *result;
+    // warning: return cur_line->next if it exist, or we will return cur_line->prev
+    if(cur_line->prev) {
+        cur_line->prev->next = cur_line->next;
+        result = cur_line->prev;
+    }
+    if(cur_line->next) {
+        cur_line->next->prev = cur_line->prev;
+        result = cur_line->next;
+    }
+    // free
+    free(cur_line->str);
+    free(cur_line);
+    return result;
+}
+
 /* file function */
 void save_file(char *path) {
     FILE *fp = fopen(path, "w+");
@@ -92,39 +109,12 @@ void render_pad() {
         waddstr(editor.pad, cur_line->str);
         cur_line = cur_line->next;
     }
-    wmove(editor.pad, editor.row, editor.col);
 }
 
-int end_col(Line *cur_line) {
-    int len = cur_line->len;
-    if(len == 0) return 0;
-    if(cur_line->str[len - 1] == '\n') {
-        len = (len - 1 < 0) ? 0 : len - 1;
-    }
-    // len to col
-    return len = (len - 1 < 0) ? 0 : len - 1;
-}
-
-void move_up() {
-    if(editor.row - 1 >= 0) {
-        editor.row -= 1;
-        editor.cur_line = editor.cur_line->prev;
-        // check col
-        int end = end_col(editor.cur_line);
-        editor.col = (editor.col > end) ? end : editor.col;
-    }
-}
-
-void move_down() {
-    if(editor.row + 1 < editor.file.line_num) {
-        editor.row += 1;
-        editor.cur_line = editor.cur_line->next;
-        int end = end_col(editor.cur_line);
-        editor.col = (editor.col > end) ? end : editor.col;
-    }
-}
-
-void update_screen() {
+void update_pad() {
+    // avoid show cursor on main pad on command mode
+    if(editor.mode == COMMAND_MODE) return;
+    // update max_line and min_line
     if(editor.row < editor.min_line) {
         editor.max_line -= editor.min_line - editor.row;
         editor.min_line = editor.row;
@@ -132,22 +122,32 @@ void update_screen() {
         editor.min_line += editor.row - editor.max_line;
         editor.max_line = editor.row;
     }
+    // move cursor to main pad and refresh
     wmove(editor.pad, editor.row, editor.col);
     prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
 }
 
-void adjust_terminal() {
-    // TODO: resize pad
-    if(editor.height != LINES - 1) {
-        editor.height = LINES - 1;
-        editor.max_line = editor.min_line + editor.height - 1;
+void update_status_bar() {
+    char status_info[200] = {0};
+    switch (editor.mode) {
+        case NORMAL_MODE:
+            sprintf(status_info, "%*s %d,%d\n",
+                editor.width - 20, " ", editor.row + 1, editor.col + 1);
+            break;
+        case INSERT_MODE:
+            sprintf(status_info, "-- INSERT -- %*s %d,%d  %d/%d\n",
+                editor.width - 30, " ", editor.row + 1, editor.col + 1,
+                editor.row + 1, editor.file.line_num);
+            break;
+        case COMMAND_MODE:
+            sprintf(status_info, ":%s\n", editor.cmd_buffer);
+            break;
     }
-    if(editor.width != COLS) {
-        editor.width = COLS;
-    }
-    update_screen();
+    mvwaddstr(editor.status_bar, 0, 0, status_info);
+    // command mode shows cursor on status_bar pad and before \n
+    if(editor.mode == COMMAND_MODE) wmove(editor.status_bar, 0, editor.cmd_cnt + 1);
+    prefresh(editor.status_bar, 0, 0, LINES-1, 0, LINES, COLS);
 }
-
 
 /* init function */
 void init_terminal() {
@@ -194,13 +194,6 @@ void init_file(char *path) {
     free(buffer);
 }
 
-void prepend_newline() {
-    editor.cur_line = insert_line("\n", editor.cur_line->prev, editor.cur_line);
-    if(editor.row == 0) editor.file.start = editor.cur_line;
-    editor.file.line_num += 1;
-    winsertln(editor.pad);
-}
-
 void init_editor(char *path) {
     editor.pre_normal = 0;
     /* init editor info pad */
@@ -210,8 +203,8 @@ void init_editor(char *path) {
     keypad(editor.pad, TRUE);
     editor.pad_height = editor.file.line_num + 100;
     /* init cmd pad */
-    editor.cmd_pad = newpad(1, COLS);
-    keypad(editor.cmd_pad, TRUE);
+    editor.status_bar = newpad(1, COLS);
+    keypad(editor.status_bar, TRUE);
 
     /* init main pad size */
     editor.width = COLS;
@@ -227,31 +220,120 @@ void init_editor(char *path) {
 
     // show file
     render_pad();
-    prefresh(editor.pad, 0, 0, 0, 0, editor.height - 1, editor.width - 1);
+    update_status_bar();
+    update_pad();
 }
-int first_char() {
-    for(int i = 0; i < editor.cur_line->len; i++) {
-        if(editor.cur_line->str[i] != ' ') {
-            return i;
-        }
+
+/* find char function */
+int last_char(Line *cur_line) {
+    if(cur_line->len == 0) return 0;
+    int last_idx = cur_line->len - 1;
+    // skip \n
+    if(last_idx > 0 && cur_line->str[last_idx] == '\n') {
+        last_idx --;
     }
-    return 0;
+    return last_idx;
+}
+
+int first_char(Line *cur_line) {
+    int i = 0;
+    while(i < cur_line->len && cur_line->str[i] == ' ') {
+        i++;
+    }
+    return (i < cur_line->len) ? i : last_char(cur_line);
+}
+
+/* undefined */
+void adjust_terminal() {
+    // TODO: resize pad
+    if(editor.height != LINES - 1) {
+        editor.height = LINES - 1;
+        editor.max_line = editor.min_line + editor.height - 1;
+    }
+    if(editor.width != COLS) {
+        editor.width = COLS;
+    }
+    update_pad();
+}
+
+void prepend_newline() {
+    editor.cur_line = insert_line("\n", editor.cur_line->prev, editor.cur_line);
+    if(editor.row == 0) editor.file.start = editor.cur_line;
+    editor.file.line_num += 1;
+    winsertln(editor.pad);
+}
+
+/* action function */
+void move_up() {
+    if(editor.row > 1) {
+        editor.row -= 1;
+        editor.cur_line = editor.cur_line->prev;
+        int end = last_char(editor.cur_line);
+        editor.col = (editor.col > end) ? end : editor.col;
+    }
+}
+
+void move_down() {
+    if(editor.row + 1 < editor.file.line_num) {
+        editor.row += 1;
+        editor.cur_line = editor.cur_line->next;
+        int end = last_char(editor.cur_line);
+        editor.col = (editor.col > end) ? end : editor.col;
+    }
 }
 
 /* mode action */
 void insert_newline();
 void delete_ch();
-bool command_mode_action(int ch);
+
+void insert_mode_change(int ch) {
+    editor.mode = INSERT_MODE;
+    switch(ch){
+        case 'i':
+            break;
+        case 'I': // insert mode (find first non space char)
+            editor.col = first_char(editor.cur_line);
+            break;
+        case 'o':
+            editor.col = last_char(editor.cur_line) + 1;
+            insert_newline();
+            break;
+        case 'O':
+            editor.col = 0;
+            prepend_newline();
+            break;
+        case 'a': // insert mode
+            // if col line not empty
+            if(last_char(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col += 1;
+                }
+            } else {
+                editor.col += 1;
+            }
+            break;
+        case 'A': // insert mode
+            if(last_char(editor.cur_line) == 0) {
+                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
+                    editor.col = last_char(editor.cur_line) + 1;
+                }
+            } else {
+                editor.col = last_char(editor.cur_line) + 1;
+            }
+            break;
+    }
+}
 
 bool normal_mode_action(int ch) {
     switch(ch){
+        // move cursor
         case KEY_LEFT:
         case 'h':
             editor.col = (editor.col - 1 < 0) ? 0 : editor.col - 1;
             break;
         case KEY_RIGHT:
         case 'l':
-            if(editor.col + 1 <= end_col(editor.cur_line))
+            if(editor.col + 1 <= last_char(editor.cur_line))
                 editor.col += 1;
             break;
         case KEY_UP:
@@ -259,7 +341,7 @@ bool normal_mode_action(int ch) {
             move_up();
             break;
         case KEY_DOWN:
-        case 'j': // down
+        case 'j':
             move_down();
             break;
         case 'x': // delete cur char
@@ -269,12 +351,32 @@ bool normal_mode_action(int ch) {
                 editor.col += 1;
                 delete_ch();
                 // deal with end of line problem
-                if(editor.col > end_col(editor.cur_line)) {
-                    editor.col = end_col(editor.cur_line);
+                if(editor.col > last_char(editor.cur_line)) {
+                    editor.col = last_char(editor.cur_line);
                 }
             }
             break;
-        case 'g': 
+        case 'd':
+            // TODO: buffer the delete line and support p P action
+            if(editor.pre_normal == 'd') {
+                editor.pre_normal = 0;
+                wdeleteln(editor.pad);
+                editor.file.line_num -= 1;
+                editor.cur_line = delete_line(editor.cur_line);
+                // TODO: maybe it can be a function
+                // update file start or end
+                if(editor.row == 0) {
+                    editor.file.start = editor.cur_line;
+                } else if(editor.row == editor.file.line_num) {
+                    editor.row -= 1;
+                    editor.file.end = editor.cur_line;
+                }
+            } else {
+                editor.pre_normal = 'd';
+            }
+            break;
+        // jump line
+        case 'g':
             if(editor.pre_normal == 'g') {
                 editor.cur_line = editor.file.start;
                 editor.row = 0;
@@ -283,74 +385,24 @@ bool normal_mode_action(int ch) {
                 editor.pre_normal = 'g';
             }
             break;
-        case 'd':
-            // TODO: buffer the delete line and support p P action
-            if(editor.pre_normal == 'd') {
-                wdeleteln(editor.pad);
-                editor.file.line_num -= 1;
-
-                editor.cur_line->prev->next = editor.cur_line->next;
-                if(editor.cur_line->next) {
-                    editor.cur_line->next->prev= editor.cur_line->prev;
-                    editor.cur_line = editor.cur_line->next;
-                } else {
-                    editor.cur_line = editor.cur_line->prev;
-                    editor.row -= 1;
-                }
-                editor.pre_normal = 0;
-            } else {
-                editor.pre_normal = 'd';
-            }
-            break;
         case 'G':
             editor.row = editor.file.line_num - 1;
             editor.cur_line = editor.file.end;
-            editor.col = end_col(editor.cur_line);
+            editor.col = last_char(editor.cur_line);
             break;
+        case 'a': // change to insert mode
+        case 'A':
         case 'o':
-            editor.col = end_col(editor.cur_line) + 1;
-            insert_newline();
-            editor.mode = INSERT_MODE;
-            break;
         case 'O':
-            editor.col = 0;
-            prepend_newline();
-            editor.mode = INSERT_MODE;
+        case 'i':
+        case 'I':
+            insert_mode_change(ch);
             break;
-        case 'a': // insert mode
-            // if col line not empty
-            if(end_col(editor.cur_line) == 0) {
-                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
-                    editor.col += 1;
-                }
-            } else {
-                editor.col += 1;
-            }
-            editor.mode = INSERT_MODE;
+        case ':': // change to command mode
+            editor.mode =  COMMAND_MODE;
             break;
-        case 'A': // insert mode
-            if(end_col(editor.cur_line) == 0) {
-                if(editor.cur_line->str[0] != '\n' && editor.cur_line->str[0] != 0) {
-                    editor.col = end_col(editor.cur_line) + 1;
-                }
-            } else {
-                editor.col = end_col(editor.cur_line) + 1;
-            }
-            editor.mode = INSERT_MODE;
-            break;
-        case 'I': // insert mode (find first non space char)
-            editor.mode = INSERT_MODE;
-            editor.col = first_char();
-            break;
-        case 'i': // insert mode
-            editor.mode = INSERT_MODE;
-            break;
-        case ':': // command mode
-            editor.mode = COMMAND_MODE;
-            command_mode_action((int)ch);
-            return false;
+
     }
-    update_screen();
     return false;
 }
 
@@ -374,8 +426,6 @@ void insert_ch(int ch) {
     editor.col += 1;
     // redraw
     mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
-    // move cursor
-    update_screen();
 }
 
 void delete_ch() {
@@ -436,8 +486,6 @@ void delete_ch() {
             waddch(editor.pad, '\n');
         }
     }
-    // move cursor
-    update_screen();
 }
 
 void insert_newline() {
@@ -467,7 +515,6 @@ void insert_newline() {
     // draw cursor and update
     editor.col = 0;
     editor.row += 1;
-    update_screen();
 }
 
 bool insert_mode_action(int ch) {
@@ -477,7 +524,7 @@ bool insert_mode_action(int ch) {
             break;
         case KEY_RIGHT:
             // insert mode can move on \n
-            if(editor.col + 1 <= end_col(editor.cur_line) + 1)
+            if(editor.col + 1 <= last_char(editor.cur_line) + 1)
                 editor.col += 1;
             break;
         case KEY_UP:
@@ -488,8 +535,8 @@ bool insert_mode_action(int ch) {
             break;
         case ESC:
             editor.mode = NORMAL_MODE;
-            if(editor.col > end_col(editor.cur_line)) {
-                editor.col = end_col(editor.cur_line);
+            if(editor.col > last_char(editor.cur_line)) {
+                editor.col = last_char(editor.cur_line);
             }
             break;
         case KEY_BACKSPACE:
@@ -510,20 +557,19 @@ bool insert_mode_action(int ch) {
             insert_ch(ch);
             break;
     }
-    update_screen();
     return false;
 }
 
 bool run_command() {
     // TODO: if file is dirty, it needs to use q!
-    if(strcmp(editor.command_buffer, ":w") == 0) {
+    if(strcmp(editor.cmd_buffer, "w") == 0) {
         save_file("test.out");
         return false;
     }
     // line jump
-    if('0' <= editor.command_buffer[1] && '9' >= editor.command_buffer[1]) {
+    if('0' <= editor.cmd_buffer[0] && '9' >= editor.cmd_buffer[0]) {
         // get line num, be care for exceed number
-        int line_num = atoi(editor.command_buffer + 1);
+        int line_num = atoi(editor.cmd_buffer);
         if(line_num >= editor.file.line_num) {
             line_num = editor.file.line_num - 1;
         } else if(line_num > 0){ // warning: row is 0 base
@@ -540,18 +586,10 @@ bool run_command() {
         }
         return false;
     }
-    if(strcmp(editor.command_buffer, ":wq") == 0) {
+    if(strcmp(editor.cmd_buffer, "wq") == 0) {
         save_file("test.out");
     }
     return true;
-}
-
-void render_cmd_pad() {
-    mvwaddstr(editor.cmd_pad, 0, 0, editor.command_buffer);
-    // deal with clear problem
-    waddch(editor.cmd_pad, '\n');
-    wmove(editor.cmd_pad, 0, editor.cmd_cnt);
-    prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
 }
 
 bool command_mode_action(int ch) {
@@ -560,44 +598,33 @@ bool command_mode_action(int ch) {
         case NEWLINE: {
             editor.mode = NORMAL_MODE;
             bool result = run_command();
-            // clear command buffer 
+            // clear command buffer
             editor.cmd_cnt = 0;
-            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
-            // update screen
-            render_cmd_pad();
-            update_screen();
+            memset(editor.cmd_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
             return result;
         }
         case ESC:
             // clear buffer and change to normal mode
             editor.mode = NORMAL_MODE;
-            // clear command buffer 
+            // clear command buffer
             editor.cmd_cnt = 0;
-            memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
-            // update screen
-            render_cmd_pad();
-            update_screen();
+            memset(editor.cmd_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
             break;
         case KEY_BACKSPACE:
         case DEL:
-            if(editor.cmd_cnt == 1) {
+            if(editor.cmd_cnt == 0) {
                 // clear buffer and change to normal mode
                 editor.mode = NORMAL_MODE;
-                // clear command buffer 
+                // clear command buffer
                 editor.cmd_cnt = 0;
-                memset(editor.command_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
-                // update screen
-                render_cmd_pad();
-                update_screen();
+                memset(editor.cmd_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
             } else {
                 editor.cmd_cnt -= 1;
-                editor.command_buffer[editor.cmd_cnt] = 0;
-                render_cmd_pad();
+                editor.cmd_buffer[editor.cmd_cnt] = 0;
             }
             break;
         default:
-            editor.command_buffer[editor.cmd_cnt++] = ch;
-            render_cmd_pad();
+            editor.cmd_buffer[editor.cmd_cnt++] = ch;
     }
     return false;
 }
@@ -616,39 +643,6 @@ bool read_keyboard() {
     };
 }
 
-void update_status_bar() {
-    switch (editor.mode) {
-        case NORMAL_MODE: {
-            char str[200] = {0};
-            sprintf(str, "%*s %d,%d\n",
-                editor.width - 20, " ", editor.row + 1, editor.col + 1);
-
-
-            mvwaddstr(editor.cmd_pad, 0, 0, str);
-            // deal with clear problem
-            wmove(editor.pad, editor.row, editor.col);
-            prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
-            prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
-            break;
-        }
-        case COMMAND_MODE:
-            break;
-        case INSERT_MODE: {
-            char str[200] = {0};
-            sprintf(str, "-- INSERT -- %*s %d,%d  %d/%d\n",
-                editor.width - 30, " ", editor.row + 1, editor.col + 1,
-                editor.row + 1, editor.file.line_num);
-
-            mvwaddstr(editor.cmd_pad, 0, 0, str);
-            // deal with clear problem
-            wmove(editor.pad, editor.row, editor.col);
-            prefresh(editor.cmd_pad, 0, 0, LINES-1, 0, LINES, COLS);
-            prefresh(editor.pad, editor.min_line, 0, 0, 0, editor.height - 1, editor.width - 1);
-            break;
-        }
-    }
-}
-
 /* main function */
 int main(int argc, char *argv[]) {
     if(argc != 2) {
@@ -658,11 +652,10 @@ int main(int argc, char *argv[]) {
     /* init */
     init_terminal();
     init_editor(argv[1]);
-
-    update_status_bar();
-    while(1) {
-        if(read_keyboard()) break;
+    /* main loop */
+    while(read_keyboard() == false) {
         update_status_bar();
+        update_pad();
     }
     endwin();
 }
