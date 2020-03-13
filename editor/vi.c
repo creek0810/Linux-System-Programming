@@ -118,6 +118,13 @@ Line *update_line(Line *cur_line, char *str) {
 }
 
 /* file function */
+void update_file_time() {
+    // update file.last_update
+    struct stat file_info;
+    stat(editor.file.path, &file_info);
+    editor.file.last_update = file_info.st_mtime;
+}
+
 void save_file(char *path) {
     FILE *fp = fopen(path, "w+");
     Line *cur_line = editor.file.start;
@@ -126,6 +133,13 @@ void save_file(char *path) {
         cur_line = cur_line->next;
     }
     fclose(fp);
+    update_file_time();
+}
+
+bool file_is_updated() {
+    struct stat file_info;
+    stat(editor.file.path, &file_info);
+    return editor.file.last_update != file_info.st_mtime;
 }
 
 /* draw screen function */
@@ -180,21 +194,17 @@ void update_status_bar() {
 void init_terminal() {
     initscr();
     noecho();
-    cbreak();
     keypad(stdscr, TRUE);
     set_escdelay(0);
 }
 
 void init_file(char *path) {
-    // get modification time
-    struct stat file_info;
-    stat(path, &file_info);
-    editor.file.last_update = file_info.st_mtime;
-
     // TODO: deal with tab showing problem
     // init editor.file
     memset(&editor.file, 0, sizeof(File));
     editor.file.path = path;
+    // init modification time
+    update_file_time();
 
     /* start load file */
     FILE *fp = fopen(path, "r+");
@@ -234,6 +244,7 @@ void init_editor(char *path) {
     editor.pad = newpad(editor.file.line_num + 100, COLS);
     keypad(editor.pad, TRUE);
     editor.pad_height = editor.file.line_num + 100;
+    nodelay(editor.pad, TRUE);
     /* init cmd pad */
     editor.status_bar = newpad(1, COLS);
     keypad(editor.status_bar, TRUE);
@@ -251,6 +262,28 @@ void init_editor(char *path) {
     editor.mode = NORMAL_MODE;
 
     // show file
+    render_pad();
+    update_status_bar();
+    update_pad();
+}
+
+void reload(char *path) {
+    // clear old file structure
+    Line *cur_line = editor.file.start;
+    while(cur_line) {
+        Line *next_line = cur_line->next;
+        free(cur_line->str);
+        free(cur_line);
+        cur_line = next_line;
+    }
+    // reload
+    wclear(editor.pad);
+    init_file(path);
+    // after init, cur_line is file.start, so we need to update cur_line
+    int idx = 0;
+    while(idx++ < editor.row) {
+        editor.cur_line = editor.cur_line->next;
+    }
     render_pad();
     update_status_bar();
     update_pad();
@@ -440,10 +473,23 @@ void delete_ch() {
 }
 
 bool run_command() {
+    // quit
+    if(strcmp(editor.cmd_buffer, "wq") == 0) {
+        save_file(editor.file.path);
+        return true;
+    }
     // TODO: if file is dirty, it needs to use q!
+    if(strcmp(editor.cmd_buffer, "q") == 0) {
+        save_file(editor.file.path);
+        return true;
+    }
+    if(strcmp(editor.cmd_buffer, "q!") == 0) {
+        save_file(editor.file.path);
+        return true;
+    }
+
     if(strcmp(editor.cmd_buffer, "w") == 0) {
-        save_file("test.out");
-        return false;
+        save_file(editor.file.path);
     }
     // line jump
     if('0' <= editor.cmd_buffer[0] && '9' >= editor.cmd_buffer[0]) {
@@ -465,10 +511,7 @@ bool run_command() {
         }
         return false;
     }
-    if(strcmp(editor.cmd_buffer, "wq") == 0) {
-        save_file("test.out");
-    }
-    return true;
+    return false;
 }
 
 int auto_indent(Line *prev_line) {
@@ -771,9 +814,31 @@ bool command_mode_action(int ch) {
     return false;
 }
 
+bool info_mode_action(int ch) {
+    switch(ch) {
+        case KEY_ENTER:
+        case NEWLINE: {
+            editor.mode = NORMAL_MODE;
+            // run_command();
+            // clear command buffer
+            editor.cmd_cnt = 0;
+            memset(editor.cmd_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
+        }
+        case KEY_BACKSPACE:
+        case DEL:
+            if(editor.cmd_cnt > 0) {
+                editor.cmd_cnt -= 1;
+                editor.cmd_buffer[editor.cmd_cnt] = 0;
+            }
+            break;
+        default:
+            editor.cmd_buffer[editor.cmd_cnt++] = ch;
+    }
+    return false;
+}
+
 // the return value represent close editor or not
-bool read_keyboard() {
-    int ch = wgetch(editor.pad);
+bool action(int ch) {
     adjust_terminal();
     switch(editor.mode) {
         case NORMAL_MODE:
@@ -795,9 +860,16 @@ int main(int argc, char *argv[]) {
     init_terminal();
     init_editor(argv[1]);
     /* main loop */
-    while(read_keyboard() == false) {
-        update_status_bar();
-        update_pad();
+    int ch;
+    while((ch = wgetch(editor.pad))) {
+        if(ch != -1) {
+            if(action(ch)) break;
+            update_status_bar();
+            update_pad();
+        }
+        if(file_is_updated()) {
+            reload(argv[1]);
+        }
     }
     endwin();
 }
