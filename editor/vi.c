@@ -12,7 +12,7 @@
 
 #define TAB_SIZE 4
 #define INDENT_SIZE 4
-#define COMMAND_BUFFER_SIZE 50
+#define COMMAND_BUFFER_SIZE 100
 #define NORMAL_BUFFER_SIZE 50
 
 /* struct and enum */
@@ -102,7 +102,10 @@ Line *update_line(Line *cur_line, char *str) {
     // warning: don't forget to count '\0'
     int str_size = str_len + 1;
     if(str_size > cur_line->size) {
-        cur_line->size *= 2;
+        // find min fit size
+        while(cur_line->size < str_size) {
+            cur_line->size *= 2;
+        }
         char *new_ptr = (char*)realloc(cur_line->str, sizeof(char) * cur_line->size);
         if(new_ptr == NULL) {
             endwin();
@@ -138,8 +141,8 @@ void save_file(char *path) {
 
 bool file_is_updated() {
     struct stat file_info;
-    stat(editor.file.path, &file_info);
-    return editor.file.last_update != file_info.st_mtime;
+    int exist = stat(editor.file.path, &file_info);
+    return exist == 0 && editor.file.last_update != file_info.st_mtime;
 }
 
 /* draw screen function */
@@ -392,23 +395,11 @@ void insert_newline(char *str, Line *prev_line, Line *next_line, int row, int co
 
 void insert_ch(int ch) {
     Line *cur_line = editor.cur_line;
-    // warning: don't forget to count '\0'
-    if(cur_line->len + 2 > cur_line->size) {
-        cur_line->size *= 2;
-        char *new_ptr = (char*)realloc(cur_line->str, sizeof(char) * cur_line->size);
-        if(new_ptr == NULL) {
-            endwin();
-            printf("realloc error!\n");
-            exit(1);
-        }
-        cur_line->str = new_ptr;
-    }
     int x = editor.col;
-    memmove(cur_line->str + x + 1, cur_line->str + x, cur_line->len - x);
-    cur_line->str[x] = ch;
-    cur_line->len += 1;
+    char new_str[200] = {0};
+    sprintf(new_str, "%.*s%c%s", x, cur_line->str, ch, cur_line->str + x);
+    update_line(cur_line, new_str);
     editor.col += 1;
-    // redraw
     mvwaddstr(editor.pad, editor.row, 0, cur_line->str);
 }
 
@@ -523,6 +514,13 @@ int auto_indent(Line *prev_line) {
     }
 }
 
+bool is_word(char ch) {
+    if(ch >= 'a' && ch <= 'z') return true;
+    if(ch >= 'A' && ch <= 'Z') return true;
+    if(ch >= '0' && ch <= '9') return true;
+    if(ch == '_') return true;
+    return false;
+}
 
 /* mode action */
 void insert_mode_change(int ch) {
@@ -536,22 +534,14 @@ void insert_mode_change(int ch) {
         case 'o': { // open new line below cur_line
             char str[200] = {0};
             int indent_size = auto_indent(editor.cur_line);
-            if(indent_size) {
-                sprintf(str, "%*s\n", indent_size, " ");
-            } else {
-                sprintf(str, "\n");
-            }
+            sprintf(str, "%*s\n", indent_size, "");
             insert_newline(str, editor.cur_line, editor.cur_line->next, editor.row + 1, indent_size);
             break;
         }
         case 'O': { // open new line above cur_line
             char str[200] = {0};
             int indent_size = auto_indent(editor.cur_line->prev);
-            if(indent_size) {
-                sprintf(str, "%*s\n", indent_size, " ");
-            } else {
-                sprintf(str, "\n");
-            }
+            sprintf(str, "%*s\n", indent_size, "");
             insert_newline(str, editor.cur_line->prev, editor.cur_line, editor.row, indent_size);
             break;
         }
@@ -630,21 +620,50 @@ bool normal_mode_action(int ch) {
             if(editor.pre_normal == 'd') {
                 // store cur_line->str into editor.paste_buffer
                 update_paste_buffer(editor.cur_line->str);
-
                 editor.pre_normal = 0;
-                wdeleteln(editor.pad);
-                editor.file.line_num -= 1;
-                editor.cur_line = delete_line(editor.cur_line);
-                // TODO: maybe it can be a function
-                // update file start or end
-                if(editor.row == 0) {
-                    editor.file.start = editor.cur_line;
-                } else if(editor.row == editor.file.line_num) {
-                    editor.row -= 1;
-                    editor.file.end = editor.cur_line;
+                if(editor.file.line_num == 1) {
+                    update_line(editor.cur_line, "\n");
+                    mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
+                } else {
+                    wdeleteln(editor.pad);
+                    editor.file.line_num -= 1;
+                    editor.cur_line = delete_line(editor.cur_line);
+                    // TODO: maybe it can be a function
+                    // update file start or end
+                    if(editor.row == 0) {
+                        editor.file.start = editor.cur_line;
+                    } else if(editor.row == editor.file.line_num) {
+                        editor.row -= 1;
+                        editor.file.end = editor.cur_line;
+                    }
                 }
+                int last_loc = last_char(editor.cur_line);
+                editor.col = (editor.col > last_loc) ? last_loc : editor.col;
             } else {
                 editor.pre_normal = 'd';
+            }
+            break;
+        // word
+        case 'w':
+            if(editor.pre_normal == 'd') {
+                editor.pre_normal = 0;
+
+                while(is_word(editor.cur_line->str[editor.col])) {
+                    editor.col += 1;
+                    delete_ch();
+                    // deal with end of line problem
+                    if(editor.col > last_char(editor.cur_line)) {
+                        editor.col = last_char(editor.cur_line);
+                    }
+                }
+                if(editor.cur_line->str[editor.col] == ' ') {
+                    editor.col += 1;
+                    delete_ch();
+                    // deal with end of line problem
+                    if(editor.col > last_char(editor.cur_line)) {
+                        editor.col = last_char(editor.cur_line);
+                    }
+                }
             }
             break;
         // indent
@@ -760,7 +779,7 @@ bool insert_mode_action(int ch) {
             // add indent to cur_line
             char str[200] = {0};
             int indent_size = auto_indent(editor.cur_line->prev);
-            sprintf(str, "%*s%s", indent_size, " ", editor.cur_line->str);
+            sprintf(str, "%*s%s", indent_size, "", editor.cur_line->str);
             update_line(editor.cur_line, str);
             editor.col = indent_size;
             mvwaddstr(editor.pad, editor.row, 0, editor.cur_line->str);
@@ -814,29 +833,6 @@ bool command_mode_action(int ch) {
     return false;
 }
 
-bool info_mode_action(int ch) {
-    switch(ch) {
-        case KEY_ENTER:
-        case NEWLINE: {
-            editor.mode = NORMAL_MODE;
-            // run_command();
-            // clear command buffer
-            editor.cmd_cnt = 0;
-            memset(editor.cmd_buffer, 0, COMMAND_BUFFER_SIZE * sizeof(char));
-        }
-        case KEY_BACKSPACE:
-        case DEL:
-            if(editor.cmd_cnt > 0) {
-                editor.cmd_cnt -= 1;
-                editor.cmd_buffer[editor.cmd_cnt] = 0;
-            }
-            break;
-        default:
-            editor.cmd_buffer[editor.cmd_cnt++] = ch;
-    }
-    return false;
-}
-
 // the return value represent close editor or not
 bool action(int ch) {
     adjust_terminal();
@@ -848,6 +844,33 @@ bool action(int ch) {
         case COMMAND_MODE:
             return command_mode_action(ch);
     };
+}
+
+bool need_refresh() {
+    // draw info text
+    char *info =  "File is modificated, do you want to reload it ?(y/n)\n";
+    mvwaddstr(editor.status_bar, 0, 0, info);
+    prefresh(editor.status_bar, 0, 0, LINES-1, 0, LINES, COLS);
+    // get command
+    int ch;
+    bool result;
+    while((ch = wgetch(editor.pad))) {
+        if(ch == 'y' || ch == 'Y') {
+            result = true;
+            break;
+        }
+        if(ch == 'n' || ch == 'N') {
+            result = false;
+            break;
+        }
+    }
+    // clean status bar and move cursor to original offset
+    if(!result) {
+        update_status_bar();
+        update_pad();
+        update_file_time();
+    }
+    return result;
 }
 
 /* main function */
@@ -868,7 +891,7 @@ int main(int argc, char *argv[]) {
             update_pad();
         }
         if(file_is_updated()) {
-            reload(argv[1]);
+            if(need_refresh()) reload(argv[1]);
         }
     }
     endwin();
