@@ -130,8 +130,8 @@ void print_tree(NodeList *cur_node) {
     printf("\n");
 }
 
+/* main parser function */
 NodeList *parse(Token *head) {
     cur_token = head;
-    // start pare
     return parse_pipe();
 }

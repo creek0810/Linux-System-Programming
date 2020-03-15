@@ -68,7 +68,19 @@ Token *tokenize(char *cmd) {
             }
             default: {
                 int new_loc = word(cmd, cur_loc, str_len);
-                Token *token = new_token(TK_WORD, &cur_token, cmd + cur_loc, new_loc - cur_loc);
+                // expand tilde
+                char *str_loc = cmd + cur_loc;
+                int str_len = new_loc - cur_loc;
+                if(cmd[cur_loc] == '~') {
+                    struct passwd *user_info = getpwuid(getuid());
+                    int home_len = strlen(user_info->pw_dir);
+
+                    str_len = str_len - 1 + home_len;
+                    str_loc = calloc(1, sizeof(char) * (str_len + 1));
+                    sprintf(str_loc, "%s%s", user_info->pw_dir, cmd + cur_loc + 1);
+                }
+
+                Token *token = new_token(TK_WORD, &cur_token, str_loc, str_len);
                 if(!head) head = token;
                 cur_loc = new_loc;
                 break;
