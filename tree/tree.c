@@ -69,6 +69,8 @@ PathList *sort(char *path) {
             append_path_list(result, cur_dir->d_name);
         }
     }
+    // warning: don't forget to closedir! Or you will not be able to open folder.
+    closedir(d);
     // bubble sort
     for(int i = 0; i < result->top; i++) {
       for(int j = i + 1; j < result->top; j++){
@@ -106,7 +108,6 @@ void print(char *name, int depth, mode_t file_type) {
     } else {
         printf("%s", name);
     }
-
 }
 
 void print_list(PathList *list, int depth) {
@@ -163,8 +164,6 @@ void print_list(PathList *list, int depth) {
     // clear is_last array
     is_last[depth] = false;
 }
-
-
 
 int main() {
     is_last = calloc(1, sizeof(bool) * INIT_DEPTH);
