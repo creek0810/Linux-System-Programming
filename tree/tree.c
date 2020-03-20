@@ -55,6 +55,10 @@ void append_path_list(PathList *cur_list, char *path) {
     cur_list->path[cur_list->top++] = copy_path;
 }
 
+int cmp(const void *a, const void *b) {
+    return strcmp(*(char **)a, *(char **)b);
+}
+
 PathList *sort(char *path) {
     PathList *result = new_path_list();
     // get all file name
@@ -71,16 +75,7 @@ PathList *sort(char *path) {
     }
     // warning: don't forget to closedir! Or you will not be able to open folder.
     closedir(d);
-    // bubble sort
-    for(int i = 0; i < result->top; i++) {
-      for(int j = i + 1; j < result->top; j++){
-         if(strcmp(result->path[i], result->path[j]) > 0) {
-            char *tmp = result->path[i];
-            result->path[i] = result->path[j];
-            result->path[j] = tmp;
-         }
-      }
-    }
+    qsort(result->path, result->top, sizeof(result->path[0]), cmp);
     return result;
 }
 
