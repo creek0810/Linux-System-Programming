@@ -34,9 +34,6 @@ char *convert_str_to_word(char *str) {
     char *word = calloc(1, sizeof(char) * (str_len + 50));
     // start from 1 and end at str_len - 1 to skip "
     for(int i=1, w=0; i<str_len-1; i++, w++) {
-        if(str[i] == ' ') {
-            word[w++] = '\\';
-        }
         word[w] = str[i];
     }
     return word;
