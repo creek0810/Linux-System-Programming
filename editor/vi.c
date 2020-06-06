@@ -5,6 +5,7 @@
 #include <ncurses.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "color.h"
 
 #define ESC 27
 #define DEL 127
@@ -194,8 +195,30 @@ void update_status_bar() {
 }
 
 /* init function */
+void init_base_color() {
+    init_color(COLOR_BLACK , 110, 110, 110);
+    // init_color(base02 , 27, 211, 23);
+    // init_color(base01 , 345, 431, 43);
+    // init_color(base00 , 396, 482, 50);
+    // init_color(base0  , 513, 580, 58);
+    // init_color(base1  , 576, 631, 62);
+    // init_color(base2  , 933, 909, 82);
+    // init_color(base3  , 992, 964, 86);
+    //init_color(orange , 796, 294, 7);
+    // init_color(COLOR_RED, 862, 196, 15);
+    init_color(COLOR_RED, 0, 1000, 1000);
+    init_color(COLOR_MAGENTA, 827, 211, 50);
+    // init_color(violet , 423, 443, 74);
+    init_color(COLOR_BLUE, 149, 545, 82);
+    init_color(COLOR_CYAN, 164, 631, 58);
+
+    init_pair(1, COLOR_RED, COLOR_BLACK);
+}
+
+
 void init_terminal() {
     initscr();
+    start_color();
     noecho();
     keypad(stdscr, TRUE);
     set_escdelay(0);
@@ -240,6 +263,7 @@ void init_file(char *path) {
 }
 
 void init_editor(char *path) {
+    init_base_color();
     editor.pre_normal = 0;
     /* init editor info pad */
     init_file(path);
@@ -471,11 +495,9 @@ bool run_command() {
     }
     // TODO: if file is dirty, it needs to use q!
     if(strcmp(editor.cmd_buffer, "q") == 0) {
-        save_file(editor.file.path);
         return true;
     }
     if(strcmp(editor.cmd_buffer, "q!") == 0) {
-        save_file(editor.file.path);
         return true;
     }
 
@@ -849,7 +871,9 @@ bool action(int ch) {
 bool need_refresh() {
     // draw info text
     char *info =  "File is modificated, do you want to reload it ?(y/n)\n";
+    wattron(editor.status_bar, COLOR_PAIR(1));
     mvwaddstr(editor.status_bar, 0, 0, info);
+    // attroff(COLOR_PAIR(base00));
     prefresh(editor.status_bar, 0, 0, LINES-1, 0, LINES, COLS);
     // get command
     int ch;
