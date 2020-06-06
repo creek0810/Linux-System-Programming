@@ -1,1 +1,7 @@
 *.o
+shell/parser.c
+shell/parser.h
+shell/tokenizer.c
+shell/tokenizer.h
+
+shell/ash
