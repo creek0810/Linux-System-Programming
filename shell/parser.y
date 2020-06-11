@@ -7,6 +7,9 @@
 
     #include "node.h"
     #include "interactive.h"
+
+    #define PIPE_SIZE 50
+
     extern bool IS_INTERACTIVE;
     extern int yylex();
     extern FILE *yyin;
@@ -22,7 +25,7 @@
     void free_node_list(NodeList *list);
     char *expand_quote(char *str);
     void yyerror(const char* msg) {
-        printf("error: %s %d\n",msg, yylineno);
+        printf("ash: %s", msg);
     }
 %}
 
@@ -53,6 +56,13 @@
 
 %%
 program:
+       | error EOL {
+           yyerrok;
+           if(IS_INTERACTIVE) {
+               printf("\n");
+               print_bar();
+           }
+       }
        | program EOL {
            if(IS_INTERACTIVE) {
                print_bar();
@@ -157,9 +167,17 @@ char* expand_quote(char *str) {
     if(str[0] == '\'' || str[0] == '\"') {
         strncpy(new_str, str+1, strlen(str) - 2);
     } else {
+        // get home info
+        const char *home = getpwuid(getuid())->pw_dir;
+
         /* TODO: check if \\ need to be removed */
         for(int i=0, j=0; i<strlen(str); i++) {
-            if(str[i] != '\\') {
+            if(str[i] == '~') {
+                int new_len = strlen(str) - 1 + strlen(home);
+                new_str = realloc(new_str, sizeof(char) * new_len);
+                strcpy(new_str+j, home);
+                j += strlen(home);
+            }else if(str[i] != '\\') {
                 new_str[j++] = str[i];
             }
         }
@@ -177,56 +195,54 @@ void run_cmd(NodeList *list) {
     IS_EXECUTING = true;
     /* init pipe */
     // cur pipe for child to process
-    int pipes[2][2];
-    int cur_pipe = 0;
-    bool is_first_cmd = true;
+    int pipes[PIPE_SIZE][2] = {0};
+    pid_t pid[PIPE_SIZE] = {0};
+
+    int cmd_idx = 0;
 
     Node *cur_node = list->begin;
+
     while(cur_node) {
         /* built-it function */
         if(strcmp("exit", cur_node->args->val[0]) == 0) {
             exit(0);
         } else if(strcmp("cd", cur_node->args->val[0]) == 0) {
             cd(cur_node->args->val[1]);
-            is_first_cmd = false;
+            cmd_idx++;
             cur_node = cur_node->next;
             continue;
         }
 
-
         /* normal cmd */
-        int prev_pipe = (cur_pipe + 1) % 2;
-        pipe(pipes[cur_pipe]);
+        pipe(pipes[cmd_idx]);
+        pid[cmd_idx]= fork();
 
-        pid_t pid = fork();
-        if(pid < 0) {
+        if(pid[cmd_idx] < 0) {
             // error forking
             perror("error shell");
-        } else if(pid != 0) {
+        } else if(pid[cmd_idx] != 0) {
             // parent process
-            close(pipes[cur_pipe][WRITE]);
+            close(pipes[cmd_idx][WRITE]);
             int status;
-            waitpid(pid, &status, 0);
             // warning: avoid closing wrong pipe
-            if(!is_first_cmd) {
-                close(pipes[prev_pipe][READ]);
+            if(!cmd_idx) {
+                // close(pipes[cmd_idx-1][READ]);
             }
         } else {
             // child process
-
             // set ctrl-c handler
             signal(SIGINT, sigint_kill_handler);
             // Child process
-            close(pipes[cur_pipe][READ]);
+            close(pipes[cmd_idx][READ]);
             // warning: redirection has higher priority than pipe
-            if(!is_first_cmd) {
-                dup2(pipes[prev_pipe][READ], STDIN_FILENO);
-                close(pipes[prev_pipe][READ]);
+            if(cmd_idx) {
+                dup2(pipes[cmd_idx-1][READ], STDIN_FILENO);
+                close(pipes[cmd_idx-1][READ]);
             }
             if(cur_node->next) {
-                dup2(pipes[cur_pipe][WRITE], STDOUT_FILENO);
+                dup2(pipes[cmd_idx][WRITE], STDOUT_FILENO);
             }
-            close(pipes[cur_pipe][WRITE]);
+            close(pipes[cmd_idx][WRITE]);
 
             // redirection
             if(cur_node->in_path) {
@@ -253,9 +269,14 @@ void run_cmd(NodeList *list) {
             exit(0);
         }
         cur_node = cur_node->next;
-        is_first_cmd = false;
-        cur_pipe = (cur_pipe + 1) % 2;
+        cmd_idx++;
     }
+    // recover all subprocess and close pipe
+    for(int i=0; i<cmd_idx; i++) {
+        // close(pipes[i][READ]);
+        waitpid(pid[i], NULL, 0);
+    }
+
     if(IS_INTERACTIVE) {
         print_bar();
     }
